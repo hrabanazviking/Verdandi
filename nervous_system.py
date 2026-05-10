@@ -44,7 +44,7 @@ import sys
 import time
 from collections import deque
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 STATE_DIR = Path.home() / '.hermes' / 'state'
 SOCKET_PATH = STATE_DIR / 'runa.sock'
@@ -225,11 +225,24 @@ class NerveHub:
                     await writer.drain()
                     continue
 
+                if msg_type == 'recent':
+                    # Client wants recent events from ring buffer
+                    count = event.get('count', 20)
+                    recent_events = self.ring_buffer.recent(count)
+                    writer.write(json.dumps({
+                        'nerve_type': 'recent_events',
+                        'events': recent_events,
+                        'count': len(recent_events),
+                        'total': self.event_count
+                    }).encode() + b'\n')
+                    await writer.drain()
+                    continue
+
                 # It's a publish event — stamp it
                 self.event_count += 1
                 event['_seq'] = self.event_count
                 event['_ts'] = time.time()
-                event['_iso'] = datetime.utcnow().isoformat() + 'Z'
+                event['_iso'] = datetime.now(timezone.utc).isoformat()
                 # Remove nerve_type from published event
                 event.pop('nerve_type', None)
 
@@ -344,19 +357,7 @@ class NerveHub:
         # Open feed file for appending
         self.feed_file = open(FEED_PATH, 'a')
 
-        # Read existing event count from feed
-        if FEED_PATH.exists():
-            with open(FEED_PATH, 'r') as f:
-                for line in f:
-                    try:
-                        e = json.loads(line.strip())
-                        seq = e.get('_seq', 0)
-                        if seq > self.event_count:
-                            self.event_count = seq
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-
-        # Also load recent events into ring buffer
+        # Load event count and ring buffer from feed (single pass)
         if FEED_PATH.exists():
             try:
                 all_events = []
@@ -365,7 +366,11 @@ class NerveHub:
                         line = line.strip()
                         if line:
                             try:
-                                all_events.append(json.loads(line))
+                                e = json.loads(line)
+                                all_events.append(e)
+                                seq = e.get('_seq', 0)
+                                if seq > self.event_count:
+                                    self.event_count = seq
                             except json.JSONDecodeError:
                                 continue
                 for e in all_events[-RING_BUFFER_SIZE:]:
@@ -448,6 +453,7 @@ def publish_event_sync(event_type: str, data: dict = None, source: str = None):
         event['source'] = source
 
     payload = json.dumps(event) + '\n'
+    s = None
 
     try:
         import socket as sock_mod
@@ -466,17 +472,18 @@ def publish_event_sync(event_type: str, data: dict = None, source: str = None):
     except (ConnectionRefusedError, FileNotFoundError):
         # Hub not running — write to feed directly as fallback
         event['_ts'] = time.time()
-        event['_iso'] = datetime.utcnow().isoformat() + 'Z'
+        event['_iso'] = datetime.now(timezone.utc).isoformat()
         event['_fallback'] = True
         _feed_lock_write(json.dumps(event))
         return {'nerve_type': 'fallback', 'note': 'hub_offline_written_to_feed'}
     except Exception as e:
         return {'nerve_type': 'error', 'error': str(e)}
     finally:
-        try:
-            s.close()
-        except Exception:
-            pass
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def get_recent_events(count: int = 20) -> list:

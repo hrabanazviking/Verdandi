@@ -24,6 +24,9 @@ classifiers = [
 ]
 keywords = ["nervous-system", "event-bus", "unix-socket", "ai-awareness", "self-awareness", "pub-sub"]
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
 [project.scripts]
 verdandi = "nervous_system:main"
 verdandi-nerve = "nervous_system:main"
