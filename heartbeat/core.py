@@ -563,29 +563,23 @@ class HeartbeatDaemon:
             db_path = self._db_path or get_db_path()
             conn = sqlite3.connect(str(db_path))
             
-            # Save current state
+            # Save current state (use to_dict() which serializes properly)
             state_dict = self.state.to_dict()
             for key, value in state_dict.items():
-                if key == "checks":
-                    value = json.dumps({
-                        k: {"severity": v.severity.value, "message": v.message, "details": v.details}
-                        for k, v in value.items()
-                    } if isinstance(value, dict) else value)
+                if isinstance(value, dict):
+                    value = json.dumps(value)
                 elif isinstance(value, Enum):
                     value = value.value
                 conn.execute(
                     "INSERT OR REPLACE INTO heartbeat_state (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-                    (key, str(value) if not isinstance(value, str) else value)
+                    (key, str(value) if not isinstance(value, (str, int, float)) else value)
                 )
             
             # Save pulse history (keep last 1000)
-            checks_json = json.dumps({
-                name: {"severity": r.severity.value, "message": r.message}
-                for name, r in self.state.checks.items()
-            })
+            checks_json = json.dumps(state_dict.get("checks", {}))
             conn.execute(
                 "INSERT INTO pulse_history (timestamp, state, checks_json, pulse_count) VALUES (datetime('now'), ?, ?, ?)",
-                (self.state.state.value, checks_json, self.state.pulse_count)
+                (state_dict["state"], checks_json, state_dict.get("pulse_count", 0))
             )
             # Trim history to last 1000 entries
             conn.execute("DELETE FROM pulse_history WHERE id < (SELECT MAX(id) FROM pulse_history) - 1000")

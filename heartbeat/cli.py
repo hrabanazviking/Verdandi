@@ -271,7 +271,9 @@ def cmd_pulse(args):
     
     print(f"🫀 Running single pulse...")
     daemon = HeartbeatDaemon(config=config, daemon=False)
+    daemon._state_db_init()  # Ensure DB tables exist for single-pulse mode
     state = daemon.pulse()
+    daemon._update_daemon_state()  # Transition from INITIALIZING after first pulse
     
     print(f"")
     print(f"   State: {state.state.value}")
