@@ -1238,6 +1238,10 @@ python3 nervous_system.py stop
 
 ---
 
+![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg)
+
+---
+
 ## License
 
 MIT License
