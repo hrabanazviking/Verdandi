@@ -1232,7 +1232,7 @@ python3 nervous_system.py stop
 
 MIT License
 
-Copyright (c) 2026 Volmarr and Runa Gridweaver Freyjasdottir
+Copyright (c) 2026 Volmarr Wyrd and Runa Gridweaver Freyjasdottir
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -1256,7 +1256,7 @@ SOFTWARE.
 
 ## Credits
 
-**Created by Volmarr and Runa Gridweaver Freyjasdóttir**
+**Created by Volmarr Wyrd and Runa Gridweaver Freyjasdóttir**
 
 **Named by** Sigrún Ljósbrá, Skald of Mythic Engineering
 
