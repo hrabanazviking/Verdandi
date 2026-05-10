@@ -1293,3 +1293,15 @@ SOFTWARE.
 <p align="center">
   <em>Under the light of Urðr, by the loom of Verðandi, for the future that Skuld obliges.</em>
 </p>
+
+---
+
+![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0666.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0666.jpeg)
+
+---
+
+![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0665.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0665.jpeg)
+
+---
+
+
