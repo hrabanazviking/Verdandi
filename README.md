@@ -44,6 +44,10 @@ Your AI agent runs multiple processes — a Telegram session here, a cron job th
 
 ---
 
+![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0787.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0787.jpeg)
+
+---
+
 ## Table of Contents
 
 1. [What It Is](#what-it-is)
