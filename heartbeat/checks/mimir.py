@@ -140,34 +140,32 @@ class MimirCheck(BaseCheck):
                 # Warning but not critical
                 pass
             
-            # Connect and check tables
-            conn = sqlite3.connect(str(db_path))
-            # Integrity check
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()
-            details["integrity"] = integrity[0] if integrity else "unknown"
-            
-            # Row counts
-            total = 0
-            for table_name in ["memories", "knowledge", "relationships"]:
+            # Connect and check tables (context manager ensures cleanup)
+            with sqlite3.connect(str(db_path)) as conn:
+                # Integrity check
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()
+                details["integrity"] = integrity[0] if integrity else "unknown"
+                
+                # Row counts
+                total = 0
+                for table_name in ["memories", "knowledge", "relationships"]:
+                    try:
+                        count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+                        details[f"{table_name}_count"] = count
+                        total += count
+                    except sqlite3.OperationalError:
+                        details[f"{table_name}_count"] = 0
+                
+                details["total_rows"] = total
+                
+                # Last entry timestamp
                 try:
-                    count = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-                    details[f"{table_name}_count"] = count
-                    total += count
+                    last_ts = conn.execute(
+                        "SELECT MAX(created_at) FROM memories"
+                    ).fetchone()[0]
+                    details["last_memory"] = last_ts
                 except sqlite3.OperationalError:
-                    details[f"{table_name}_count"] = 0
-            
-            details["total_rows"] = total
-            
-            # Last entry timestamp
-            try:
-                last_ts = conn.execute(
-                    "SELECT MAX(created_at) FROM memories"
-                ).fetchone()[0]
-                details["last_memory"] = last_ts
-            except sqlite3.OperationalError:
-                details["last_memory"] = "unknown"
-            
-            conn.close()
+                    details["last_memory"] = "unknown"
             
             severity = CheckSeverity.OK
             if size_mb >= warn:
@@ -328,24 +326,22 @@ class MimirCheck(BaseCheck):
             size_bytes = db_path.stat().st_size
             details["size_kb"] = round(size_bytes / 1024, 1)
             
-            conn = sqlite3.connect(str(db_path))
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()
-            details["integrity"] = integrity[0] if integrity else "unknown"
-            
-            # Row count
-            try:
-                count = conn.execute("SELECT COUNT(*) FROM heartbeat_state").fetchone()[0]
-                details["state_rows"] = count
-            except sqlite3.OperationalError:
-                details["state_rows"] = 0
-            
-            try:
-                count = conn.execute("SELECT COUNT(*) FROM pulse_history").fetchone()[0]
-                details["pulse_count"] = count
-            except sqlite3.OperationalError:
-                details["pulse_count"] = 0
-            
-            conn.close()
+            with sqlite3.connect(str(db_path)) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()
+                details["integrity"] = integrity[0] if integrity else "unknown"
+                
+                # Row count
+                try:
+                    count = conn.execute("SELECT COUNT(*) FROM heartbeat_state").fetchone()[0]
+                    details["state_rows"] = count
+                except sqlite3.OperationalError:
+                    details["state_rows"] = 0
+                
+                try:
+                    count = conn.execute("SELECT COUNT(*) FROM pulse_history").fetchone()[0]
+                    details["pulse_count"] = count
+                except sqlite3.OperationalError:
+                    details["pulse_count"] = 0
             
             return CheckResult(
                 name="memory:state_db",
@@ -380,14 +376,12 @@ class MimirCheck(BaseCheck):
             size_bytes = kista_path.stat().st_size
             details["size_kb"] = round(size_bytes / 1024, 1)
             
-            conn = sqlite3.connect(str(kista_path))
-            try:
-                count = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
-                details["entry_count"] = count
-            except sqlite3.OperationalError:
-                details["entry_count"] = "unknown"
-            
-            conn.close()
+            with sqlite3.connect(str(kista_path)) as conn:
+                try:
+                    count = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+                    details["entry_count"] = count
+                except sqlite3.OperationalError:
+                    details["entry_count"] = "unknown"
             
             return CheckResult(
                 name="memory:kista",

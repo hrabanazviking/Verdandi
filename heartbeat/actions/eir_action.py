@@ -142,44 +142,38 @@ class EirAction(BaseAction):
             # Step 1: Create a backup
             shutil.copy2(str(db_path), str(backup_path))
 
-            # Step 2: Try to dump and recover
-            conn = sqlite3.connect(str(db_path))
-            try:
-                # Try integrity check first
-                result = conn.execute("PRAGMA integrity_check").fetchone()
-                if result[0] == "ok":
-                    # Not actually corrupted — run VACUUM to optimize
-                    conn.execute("VACUUM")
-                    conn.close()
-                    backup_path.unlink(missing_ok=True)
-                    return True
-            except sqlite3.DatabaseError:
-                pass
+            # Step 2: Try to verify and optimize with context manager
+            with sqlite3.connect(str(db_path)) as conn:
+                try:
+                    # Try integrity check first
+                    result = conn.execute("PRAGMA integrity_check").fetchone()
+                    if result[0] == "ok":
+                        # Not actually corrupted — run VACUUM to optimize
+                        conn.execute("VACUUM")
+                        backup_path.unlink(missing_ok=True)
+                        return True
+                except sqlite3.DatabaseError:
+                    pass  # Corrupted, proceed to recovery
 
             # Step 3: If corrupted, try to recover data
-            conn.close()
-
             # Save the corrupted file for forensics
             if not corrupted_path.exists():
                 shutil.move(str(db_path), str(corrupted_path))
 
-            # Recover from backup by re-exporting
-            recovery_conn = sqlite3.connect(str(backup_path))
-            new_conn = sqlite3.connect(str(db_path))
+            # Recover from backup by re-exporting (with context managers)
+            with sqlite3.connect(str(backup_path)) as recovery_conn:
+                with sqlite3.connect(str(db_path)) as new_conn:
+                    # Copy all tables
+                    for table_row in recovery_conn.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    ):
+                        table_name = table_row[0]
+                        try:
+                            new_conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM backup.{table_name}")
+                        except Exception:
+                            pass
+                    new_conn.commit()
 
-            # Copy all tables
-            for table_row in recovery_conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ):
-                table_name = table_row[0]
-                try:
-                    new_conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM backup.{table_name}")
-                except Exception:
-                    pass
-
-            new_conn.commit()
-            new_conn.close()
-            recovery_conn.close()
             backup_path.unlink(missing_ok=True)
 
             logger.info(f"Healed database {name}")

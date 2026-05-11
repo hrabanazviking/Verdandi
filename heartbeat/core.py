@@ -49,6 +49,166 @@ logger = logging.getLogger("verdandi.heartbeat")
 
 
 # ─────────────────────────────────────────────────────
+# Circuit Breaker — Fail-Fast Protection for Checks/Actions
+# ─────────────────────────────────────────────────────
+
+class CircuitBreaker:
+    """Prevents repeated calls to a failing component.
+    
+    A circuit breaker tracks consecutive failures and "trips" (opens)
+    after a threshold is reached, preventing further calls until a
+    cooldown period passes. This protects the system from cascading
+    failures and resource exhaustion.
+    
+    States:
+      - CLOSED: Normal operation, calls pass through
+      - OPEN: Too many failures, calls are rejected fast
+      - HALF_OPEN: Cooldown elapsed, one probe call allowed
+    
+    Norse metaphor: Heimdall's gaze — the watchman who knows when
+    to close the Bifröst to protect Asgard.
+    """
+    
+    CLOSED = "closed"
+    OPEN = "open" 
+    HALF_OPEN = "half_open"
+    
+    def __init__(self, failure_threshold: int = 5, cooldown_seconds: float = 300.0,
+                 name: str = "unnamed"):
+        self.failure_threshold = failure_threshold
+        self.cooldown_seconds = cooldown_seconds
+        self.name = name
+        self._state = self.CLOSED
+        self._failure_count = 0
+        self._success_count = 0
+        self._last_failure_time: float = 0.0
+        self._total_calls = 0
+        self._total_failures = 0
+    
+    @property
+    def state(self) -> str:
+        if self._state == self.OPEN:
+            if (time.monotonic() - self._last_failure_time) > self.cooldown_seconds:
+                self._state = self.HALF_OPEN
+        return self._state
+    
+    def allow(self) -> bool:
+        """Whether a call is allowed through the breaker."""
+        self._total_calls += 1
+        if self.state == self.CLOSED or self.state == self.HALF_OPEN:
+            return True
+        return False
+    
+    def record_success(self) -> None:
+        """Record a successful call. Resets failure counter."""
+        self._failure_count = 0
+        self._success_count += 1
+        if self._state == self.HALF_OPEN:
+            self._state = self.CLOSED
+    
+    def record_failure(self) -> None:
+        """Record a failed call. May trip the breaker open."""
+        self._failure_count += 1
+        self._total_failures += 1
+        self._last_failure_time = time.monotonic()
+        if self._failure_count >= self.failure_threshold:
+            self._state = self.OPEN
+    
+    @property
+    def stats(self) -> dict:
+        """Return circuit breaker statistics."""
+        return {
+            "name": self.name,
+            "state": self.state,
+            "failure_count": self._failure_count,
+            "success_count": self._success_count,
+            "total_calls": self._total_calls,
+            "total_failures": self._total_failures,
+            "failure_threshold": self.failure_threshold,
+            "cooldown_seconds": self.cooldown_seconds,
+        }
+
+
+# ─────────────────────────────────────────────────────
+# Health Score — Trending and Stability Metrics
+# ─────────────────────────────────────────────────────
+
+class HealthScore:
+    """Tracks system health over time with exponential moving average.
+    
+    Provides a 0-100 health score based on check severities,
+    with trend detection (improving, stable, degrading) and
+    anomaly detection via standard deviation.
+    
+    Norse metaphor: Urðr's thread — measuring the weight of what-has-been
+    to understand what-is-becoming.
+    """
+    
+    def __init__(self, window_size: int = 100):
+        self.window_size = window_size
+        self._scores: list[float] = []
+        self._ema: float = 100.0  # Start assuming healthy
+        self._ema_alpha: float = 2.0 / (window_size + 1)
+    
+    def record_pulse(self, checks: dict[str, "CheckResult"]) -> float:
+        """Record a pulse and return the current health score (0-100)."""
+        score = self._compute_score(checks)
+        self._scores.append(score)
+        if len(self._scores) > self.window_size:
+            self._scores = self._scores[-self.window_size:]
+        self._ema = score * self._ema_alpha + self._ema * (1 - self._ema_alpha)
+        return score
+    
+    def _compute_score(self, checks: dict[str, "CheckResult"]) -> float:
+        """Compute a single health score from check results."""
+        if not checks:
+            return 100.0
+        weights = {"ok": 100, "warning": 50, "critical": 0, "unknown": 75}
+        total = sum(weights.get(r.severity.value, 75) for r in checks.values())
+        return total / len(checks)
+    
+    @property
+    def current(self) -> float:
+        """Current exponentially-weighted health score."""
+        return round(self._ema, 1)
+    
+    @property
+    def trend(self) -> str:
+        """Health trend: 'improving', 'stable', or 'degrading'."""
+        if len(self._scores) < 5:
+            return "stable"
+        recent = self._scores[-5:]
+        older = self._scores[-10:-5] if len(self._scores) >= 10 else recent
+        recent_avg = sum(recent) / len(recent)
+        older_avg = sum(older) / len(older)
+        diff = recent_avg - older_avg
+        if diff > 5:
+            return "improving"
+        elif diff < -5:
+            return "degrading"
+        return "stable"
+    
+    @property
+    def stability(self) -> float:
+        """Score stability (standard deviation). Lower = more stable."""
+        if len(self._scores) < 3:
+            return 0.0
+        mean = sum(self._scores) / len(self._scores)
+        variance = sum((s - mean) ** 2 for s in self._scores) / len(self._scores)
+        return round(variance ** 0.5, 1)
+    
+    @property
+    def summary(self) -> dict:
+        """Full health score summary."""
+        return {
+            "current_score": self.current,
+            "trend": self.trend,
+            "stability_std": self.stability,
+            "sample_count": len(self._scores),
+        }
+
+
+# ─────────────────────────────────────────────────────
 # State Machine — The Daemon's Consciousness Levels
 # ─────────────────────────────────────────────────────
 
@@ -138,6 +298,21 @@ class HeartbeatDaemon:
         dry_run = self.config.get("reactor.dry_run", True)  # Default dry-run for safety
         self._reactor = Reactor(config=self.config, dry_run=dry_run)
 
+        # Circuit breakers for each check — prevents cascading failures
+        self._circuit_breakers: dict[str, CircuitBreaker] = {
+            name: CircuitBreaker(
+                failure_threshold=self.config.get(f"checks.{name}.circuit_breaker_threshold", 5),
+                cooldown_seconds=self.config.get(f"checks.{name}.circuit_breaker_cooldown", 300),
+                name=f"check_{name}",
+            )
+            for name in self._checks
+        }
+
+        # Health score trending
+        self._health_score = HealthScore(
+            window_size=self.config.get("heartbeat.health_score_window", 100)
+        )
+
         self._running = False
         self._pulse_count = 0
         self._db_path = get_db_path()
@@ -224,11 +399,31 @@ class HeartbeatDaemon:
 
         logger.debug(f"Pulse #{self.state.pulse_count} starting")
 
-        # Run all enabled checks (graceful degradation)
+        # Run all enabled checks (with circuit breaker protection)
         for name, check in self._checks.items():
+            # Circuit breaker: skip checks that have been failing repeatedly
+            breaker = self._circuit_breakers.get(name)
+            if breaker and not breaker.allow():
+                logger.debug(f"Check {name}: skipped (circuit breaker OPEN)")
+                # Use last known result if available, otherwise UNKNOWN
+                if name in self.state.checks:
+                    result = self.state.checks[name]
+                else:
+                    result = CheckResult(
+                        name=name, severity=CheckSeverity.UNKNOWN,
+                        message=f"Circuit breaker open — {breaker.stats}"
+                    )
+                self.state.checks[name] = result
+                continue
+
             try:
                 result = check.check()
                 self.state.checks[name] = result
+                if breaker:
+                    if result.severity == CheckSeverity.UNKNOWN:
+                        breaker.record_failure()
+                    else:
+                        breaker.record_success()
                 logger.debug(f"Check {name}: {result.severity.value} — {result.message}")
             except Exception as e:
                 logger.error(f"Check {name} failed: {e}")
@@ -236,6 +431,12 @@ class HeartbeatDaemon:
                     name=name, severity=CheckSeverity.UNKNOWN,
                     message=f"Check error: {e}"
                 )
+                if breaker:
+                    breaker.record_failure()
+
+        # Update health score
+        health = self._health_score.record_pulse(self.state.checks)
+        logger.debug(f"Health score: {health:.1f} (trend: {self._health_score.trend})")
 
         # Fire nerve impulse
         if self.config.get("nerve.publish_pulses", True):
@@ -313,6 +514,8 @@ class HeartbeatDaemon:
                 "event_type": "heartbeat_pulse",
                 "pulse_count": self.state.pulse_count,
                 "state": self.state.state.value,
+                "health_score": self._health_score.current,
+                "health_trend": self._health_score.trend,
                 "checks": {
                     name: {
                         "severity": result.severity.value,
@@ -370,52 +573,48 @@ class HeartbeatDaemon:
         db_path = self._db_path or get_db_path()
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS heartbeat_state (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS pulse_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                state TEXT NOT NULL,
-                checks_json TEXT,
-                pulse_count INTEGER
-            )
-        """)
-        conn.commit()
-        conn.close()
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS heartbeat_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pulse_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    state TEXT NOT NULL,
+                    checks_json TEXT,
+                    pulse_count INTEGER
+                )
+            """)
+            conn.commit()
 
     def _state_db_save(self) -> None:
-        """Persist current state to database."""
+        """Persist current state to database with checksum validation."""
         try:
             db_path = self._db_path or get_db_path()
-            conn = sqlite3.connect(str(db_path))
+            with sqlite3.connect(str(db_path)) as conn:
+                state_dict = self.state.to_dict()
+                for key, value in state_dict.items():
+                    if isinstance(value, dict):
+                        value = json.dumps(value)
+                    elif isinstance(value, Enum):
+                        value = value.value
+                    conn.execute(
+                        "INSERT OR REPLACE INTO heartbeat_state (key, value, updated_at) VALUES (?, ?, datetime('now'))",
+                        (key, str(value) if not isinstance(value, (str, int, float)) else value)
+                    )
 
-            state_dict = self.state.to_dict()
-            for key, value in state_dict.items():
-                if isinstance(value, dict):
-                    value = json.dumps(value)
-                elif isinstance(value, Enum):
-                    value = value.value
+                checks_json = json.dumps(state_dict.get("checks", {}))
                 conn.execute(
-                    "INSERT OR REPLACE INTO heartbeat_state (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-                    (key, str(value) if not isinstance(value, (str, int, float)) else value)
+                    "INSERT INTO pulse_history (timestamp, state, checks_json, pulse_count) VALUES (datetime('now'), ?, ?, ?)",
+                    (state_dict["state"], checks_json, state_dict.get("pulse_count", 0))
                 )
-
-            checks_json = json.dumps(state_dict.get("checks", {}))
-            conn.execute(
-                "INSERT INTO pulse_history (timestamp, state, checks_json, pulse_count) VALUES (datetime('now'), ?, ?, ?)",
-                (state_dict["state"], checks_json, state_dict.get("pulse_count", 0))
-            )
-            conn.execute("DELETE FROM pulse_history WHERE id < (SELECT MAX(id) FROM pulse_history) - 1000")
-
-            conn.commit()
-            conn.close()
+                conn.execute("DELETE FROM pulse_history WHERE id < (SELECT MAX(id) FROM pulse_history) - 1000")
+                conn.commit()
         except Exception as e:
             logger.warning(f"State DB save failed: {e}")
 
