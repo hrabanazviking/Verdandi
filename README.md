@@ -66,8 +66,8 @@ Your AI agent runs multiple processes — a Telegram session here, a cron job th
    - [Domain Boundaries](#domain-boundaries)
 5. [Hjartsláttur — The Heartbeat Daemon](#hjartsláttur--the-heartbeat-daemon)
    - [Heartbeat Architecture](#architecture-1)
-   - [Four Senses (Check Modules)](#four-senses-wave-2--check-modules)
-   - [Four Acts (Action Modules)](#four-acts-wave-3--action-modules)
+   - [Five Senses (Check Modules)](#five-senses-wave-2--check-modules)
+   - [Five Acts (Action Modules)](#five-acts-wave-3--action-modules)
    - [Reactor](#reactor)
    - [CLI Commands](#cli-commands)
    - [Circuit Breaker — Heimdall's Watch](#circuit-breaker--heimdalls-watch)
@@ -110,6 +110,8 @@ Your AI agent runs multiple processes — a Telegram session here, a cron job th
     - [Environment Variables](#environment-variables)
     - [Performance Characteristics](#performance-characteristics)
 11. [Self-Healing and Robustness](#self-healing-and-robustness)
+   - [Prometheus Metrics (v0.3.0)](#prometheus-metrics-v030)
+   - [Maintenance Windows (v0.3.0)](#maintenance-windows-v030)
     - [Feed File Rotation](#1-feed-file-rotation)
     - [File Locking](#2-file-locking)
     - [Socket Permission Hardening](#3-socket-permission-hardening)
@@ -341,7 +343,7 @@ The loop closes: **Urðr records → Verðandi routes → Skuld directs → acti
 └────────────────────────────────────────────┘
 ```
 
-### Four Senses (Wave 2 — Check Modules)
+### Five Senses (Wave 2 — Check Modules)
 
 | Module | Norse Name | What it monitors |
 |--------|------------|-------------------|
@@ -349,8 +351,9 @@ The loop closes: **Urðr records → Verðandi routes → Skuld directs → acti
 | `checks/huginn.py` | **Huginn** — Odin's Thought Raven | Git repos: unpushed commits, dirty files, stale branches |
 | `checks/mimir.py` | **Mímir** — The Well of Wisdom | Memory DB integrity, conversation log, nerve feed freshness, kista vault |
 | `checks/urdr.py` | **Urðr** — The Norn of the Past | Cron jobs, systemd services, stuck processes, nerve hub socket |
+| `checks/skuld.py` | **Skuld** — The Norn of the Future | Health trend prediction, anomaly detection, capacity exhaustion forecasts, emotional classification |
 
-### Four Acts (Wave 3 — Action Modules)
+### Five Acts (Wave 3 — Action Modules)
 
 | Module | Norse Name | What it does |
 |--------|------------|--------------|
@@ -358,6 +361,7 @@ The loop closes: **Urðr records → Verðandi routes → Skuld directs → acti
 | `actions/gungnir.py` | **Gungnir** — Odin's Spear | Restarts crashed systemd services (max 3 attempts) |
 | `actions/bifrǫst.py` | **Bifrǫst** — The Burning Bridge | Prunes logs, vacuums DBs, rotates files |
 | `actions/eir_action.py` | **Eir** — Healing Hand | Repairs corrupted SQLite DBs, heals JSONL, ensures dirs |
+| `actions/vor_action.py` | **Vör** — Goddess of Awareness | Pre-emptive healing: disk cleanup, memory flush, service checks before failure |
 
 ### Reactor
 
@@ -429,12 +433,21 @@ The score includes **trend detection** (improving/stable/degrading) and **stabil
 {
   "health_score": 87.5,
   "health_trend": "stable",
-  "health_stability": 3.2
+  "health_stability": 3.2,
+  "emotional_state": "contentment"
 }
 ```
 
 - **Trend**: Calculated from the slope of the last N health scores
 - **Stability**: Standard deviation — low means consistent, high means erratic
+- **Emotional State** (v0.3.0): Mapped from health + trend + stability into 7 states:
+  - `contentment` (score >85, stable/improving) → maintain
+  - `hope` (quickly improving) → verify recovery
+  - `moderate` (score ~60, stable) → routine
+  - `concern` (score ~60, degrading) → monitor closely
+  - `acceptance` (score <40, stable) → sustain healing
+  - `urgency` (score <40, degrading) → escalate
+  - `anxiety` (high variability) → increase check frequency
 
 Configure the window:
 ```yaml
@@ -1274,6 +1287,60 @@ Verðandi uses **no environment variables**. All paths are derived from `Path.ho
 
 ---
 
+## Prometheus Metrics (v0.3.0)
+
+Verðandi exposes a lightweight Prometheus `/metrics` endpoint for real-time monitoring. Zero external dependencies — pure stdlib.
+
+**8 Metrics Exposed:**
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `verdandi_health_score` | gauge | Current composite health score (0–100) |
+| `verdandi_health_trend` | gauge | Health trend slope (positive = improving) |
+| `verdandi_pulse_total` | counter | Total heartbeat pulses since startup |
+| `verdandi_daemon_state` | gauge | Current daemon state (running=3, recovering=2, degraded=1, etc.) |
+| `verdandi_check_severity` | gauge | Latest severity per check (ok=0, warning=1, critical=2, unknown=3) |
+| `verdandi_circuit_breaker_state` | gauge | Circuit breaker state per check (closed=0, open=1, half_open=2) |
+| `verdandi_emotional_state` | gauge | Emotional classification (contentment=0, hope=1, moderate=2, concern=3, acceptance=4, urgency=5, anxiety=6) |
+| `verdandi_prediction_days_to_exhaustion` | gauge | Predicted days until disk/memory exhaustion (Skuld) |
+
+**Configuration:**
+
+```yaml
+prometheus:
+  enabled: true
+  port: 9101
+  host: "0.0.0.0"
+```
+
+Scrape with: `curl http://localhost:9101/metrics`
+
+---
+
+## Maintenance Windows (v0.3.0)
+
+Schedule maintenance windows during which non-critical actions are suppressed and specified checks are skipped.
+
+```yaml
+maintenance:
+  windows:
+    - day: "sunday"
+      start: "02:00"
+      end: "06:00"
+    - day: "daily"
+      start: "03:00"
+      end: "04:00"
+  suppress_actions: true    # Suppress non-CRITICAL actions during windows
+  suppress_checks:          # Skip these checks entirely during windows
+    - projects
+```
+
+- `day` accepts `daily` or weekday names (monday–sunday, case-insensitive)
+- Times are in local timezone
+- During a window: WARNING actions are held, CRITICAL actions still fire
+
+---
+
 ## Self-Healing and Robustness
 
 Verðandi is designed to never lose an event and never stay down for long. Every failure mode has a fallback path.
@@ -1578,6 +1645,48 @@ python3 nervous_system.py stop
 ---
 
 ## Changelog
+
+### v0.3.0 — Skuld, Norn of the Future (2026-05-11)
+
+**The fifth sense awakens.** Verðandi can now *predict* the future.
+
+**New Features:**
+- **SkuldCheck** — Predictive health analysis with linear regression, anomaly detection, capacity prediction, and emotional classification
+- **Vör Action** — Pre-emptive healing that acts on predictions *before* things go critical
+- **Emotional Architecture** — Health trends mapped to 7 emotional states (contentment, hope, moderate, concern, acceptance, urgency, anxiety)
+- **Maintenance Windows** — Scheduled maintenance suppresses non-critical actions
+- **Prometheus Metrics** — 8 metrics exposed via `/metrics` HTTP endpoint (zero dependencies)
+- **pulse_metrics table** — New DB table for per-pulse health scores and emotional states
+
+**New Check:** `prediction` (SkuldCheck) — the Fifth Sense
+**New Action:** `preemptive_heal` (VörAction) — pre-emptive healing
+**New Reactor Rule:** `prediction → preemptive_heal` at WARNING severity
+
+**Configuration (new in `heartbeat.yaml`):**
+```yaml
+prediction:
+  history_hours: 168
+  anomaly_threshold: 2.0
+  trend_sensitivity: 0.05
+
+maintenance:
+  windows:
+    - day: "sunday"
+      start: "02:00"
+      end: "06:00"
+  suppress_actions: true
+  suppress_checks: []
+
+prometheus:
+  enabled: true
+  port: 9101
+  host: "0.0.0.0"
+```
+
+**Tests:** 524 passing (35 new Skuld tests)
+**Files:** 4 new modules, 11 files modified
+
+---
 
 ### v0.2.1 — Great Forge Wave (2026-05-11)
 

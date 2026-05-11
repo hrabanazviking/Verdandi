@@ -50,7 +50,7 @@ class TestFullSystemInit:
     """Test that the full system initializes correctly."""
 
     def test_version_info(self):
-        assert __version__ == "0.2.0"
+        assert __version__ == "0.3.0"
         assert "Verðandi" in __norse_name__
 
     def test_all_checks_registered(self):
@@ -69,7 +69,7 @@ class TestFullSystemInit:
 
     def test_daemon_initializes_all_checks(self):
         daemon = HeartbeatDaemon(daemon=False)
-        assert len(daemon._checks) == 4
+        assert len(daemon._checks) == 5
         assert all(isinstance(c, BaseCheck) for c in daemon._checks.values())
 
     def test_daemon_initializes_reactor(self):
@@ -357,7 +357,7 @@ class TestCLIIntegration:
             cwd=str(Path.home() / "Verdandi"),
         )
         assert result.returncode == 0
-        assert "0.2.0" in result.stdout
+        assert "0.3.0" in result.stdout
 
 
 # ═══════════════════════════════════════════════════════════════════

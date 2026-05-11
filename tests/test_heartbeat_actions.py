@@ -703,7 +703,7 @@ class TestReactor:
     def test_default_rules(self):
         reactor = Reactor()
         # Should have 5 default rules
-        assert len(reactor.rules) == 5
+        assert len(reactor.rules) == 6  # v0.3.0: added prediction → preemptive_heal
         rule_names = [(r.check_name, r.action_name) for r in reactor.rules]
         assert ("projects", "auto_push") in rule_names
         assert ("schedule", "auto_restart") in rule_names

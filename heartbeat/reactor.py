@@ -159,6 +159,12 @@ class Reactor:
                 action_name="auto_heal",
                 min_severity=CheckSeverity.CRITICAL,
             ),
+            # v0.3.0: Skuld prediction → pre-emptive healing
+            ReactionRule(
+                check_name="prediction",
+                action_name="preemptive_heal",
+                min_severity=CheckSeverity.WARNING,
+            ),
         ]
 
         # Load custom rules from config

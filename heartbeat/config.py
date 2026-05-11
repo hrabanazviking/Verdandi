@@ -38,6 +38,31 @@ DEFAULTS: dict[str, Any] = {
         "startup_delay_seconds": 10,      # Delay before first pulse after daemon start
         "max_pulse_time_seconds": 300,    # Timeout for a single pulse cycle
         "dedup_window_seconds": 300,       # Don't re-alert on same issue within this window
+        "health_score_window": 100,       # EMA window for health score trending
+    },
+
+    # v0.3.0: Skuld — Prediction settings
+    "prediction": {
+        "enabled": True,                  # Enable Skuld predictive check
+        "history_hours": 168,            # 7 days of history for predictions
+        "anomaly_window": 50,             # Rolling window for anomaly detection
+        "anomaly_threshold": 2.0,         # Z-score threshold for anomaly detection
+        "capacity_warning_days": 30,      # Alert N days before resource exhaustion
+        "capacity_critical_days": 7,       # Critical alert N days before exhaustion
+    },
+
+    # v0.3.0: Scheduled maintenance windows
+    "maintenance": {
+        "windows": [],                    # List of {"day": "sunday", "start": "02:00", "end": "06:00"}
+        "suppress_actions": True,          # During window, suppress non-critical actions
+        "suppress_checks": [],            # List of check names to skip during window
+    },
+
+    # v0.3.0: Prometheus metrics exporter
+    "prometheus": {
+        "enabled": False,                 # Set to True to enable /metrics endpoint
+        "port": 9101,                     # Prometheus scrape port
+        "host": "0.0.0.0",               # Bind address
     },
     
     # State machine thresholds

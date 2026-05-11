@@ -397,9 +397,9 @@ class TestBaseCheck:
 class TestCheckRegistry:
     """Tests for the CHECK_REGISTRY mapping."""
 
-    def test_registry_has_four_entries(self):
-        """CHECK_REGISTRY has exactly 4 check types."""
-        assert len(CHECK_REGISTRY) == 4
+    def test_registry_has_five_entries(self):
+        """Registry should have all check types (health, memory, prediction, projects, services)."""
+        assert len(CHECK_REGISTRY) == 5
 
     def test_registry_contains_health(self):
         """CHECK_REGISTRY maps 'health' to EirCheck."""

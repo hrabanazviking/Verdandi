@@ -250,6 +250,9 @@ class HeartbeatState:
                 name: result.to_dict() if isinstance(result, CheckResult) else result
                 for name, result in self.checks.items()
             },
+            "health_score": getattr(self, '_health_score_current', 0),
+            "health_trend": getattr(self, '_health_trend', 'unknown'),
+            "emotional_state": getattr(self, '_emotional_state', 'unknown'),
         }
 
 
@@ -313,9 +316,55 @@ class HeartbeatDaemon:
             window_size=self.config.get("heartbeat.health_score_window", 100)
         )
 
+        # v0.3.0: Maintenance windows — skip non-critical actions during maintenance
+        self._maintenance_windows = self.config.get("maintenance.windows", [])
+        self._maintenance_suppress_actions = self.config.get("maintenance.suppress_actions", True)
+        self._maintenance_suppress_checks = self.config.get("maintenance.suppress_checks", [])
+
         self._running = False
         self._pulse_count = 0
         self._db_path = get_db_path()
+
+        # v0.3.0: Prometheus metrics exporter
+        self._prometheus = None
+        if self.config.get("prometheus.enabled", False):
+            from heartbeat.prometheus import PrometheusExporter, MetricsRegistry
+            self._metrics_registry = MetricsRegistry()
+            self._prometheus = PrometheusExporter(
+                port=self.config.get("prometheus.port", 9101),
+                host=self.config.get("prometheus.host", "0.0.0.0"),
+                registry=self._metrics_registry,
+            )
+
+    def _in_maintenance_window(self) -> bool:
+        """Check if current time falls within a configured maintenance window.
+
+        Maintenance windows suppress non-critical actions and specified checks.
+        Format: {"day": "sunday", "start": "02:00", "end": "06:00"}
+        Days can be: monday-sunday, or "daily" for every day.
+        """
+        if not self._maintenance_windows:
+            return False
+
+        now = datetime.now(timezone.utc)
+        current_day = now.strftime("%A").lower()
+        current_time = now.strftime("%H:%M")
+
+        for window in self._maintenance_windows:
+            day = window.get("day", "daily").lower()
+            start = window.get("start", "00:00")
+            end = window.get("end", "23:59")
+
+            # Check day match
+            if day != "daily" and day != current_day:
+                continue
+
+            # Check time range
+            if start <= current_time <= end:
+                logger.info(f"In maintenance window: {window}")
+                return True
+
+        return False
 
     def run(self) -> None:
         """Main daemon loop. Blocks until shutdown."""
@@ -338,6 +387,11 @@ class HeartbeatDaemon:
         self._state_db_init()
         self.state.state = DaemonState.RUNNING
         self._running = True
+
+        # v0.3.0: Start Prometheus exporter if enabled
+        if self._prometheus:
+            self._prometheus.start()
+            logger.info("Prometheus metrics exporter started")
 
         # Startup delay
         startup_delay = self.config.get("heartbeat.startup_delay_seconds", 10)
@@ -400,7 +454,14 @@ class HeartbeatDaemon:
         logger.debug(f"Pulse #{self.state.pulse_count} starting")
 
         # Run all enabled checks (with circuit breaker protection)
+        in_maintenance = self._in_maintenance_window()
+
         for name, check in self._checks.items():
+            # Skip checks suppressed during maintenance window
+            if in_maintenance and name in self._maintenance_suppress_checks:
+                logger.debug(f"Check {name}: skipped (maintenance window)")
+                continue
+
             # Circuit breaker: skip checks that have been failing repeatedly
             breaker = self._circuit_breakers.get(name)
             if breaker and not breaker.allow():
@@ -438,13 +499,36 @@ class HeartbeatDaemon:
         health = self._health_score.record_pulse(self.state.checks)
         logger.debug(f"Health score: {health:.1f} (trend: {self._health_score.trend})")
 
+        # v0.3.0: Determine emotional state from health trends
+        try:
+            from heartbeat.checks.skuld import TrendClassifier
+            scores = self._health_score._scores
+            trend = self._health_score.trend
+            stability = self._health_score.stability
+            emotion_data = TrendClassifier.classify(scores, trend, stability)
+            self.state._health_score_current = self._health_score.current
+            self.state._health_trend = trend
+            self.state._emotional_state = emotion_data.get("emotion", "unknown")
+            logger.debug(f"Emotional state: {self.state._emotional_state}")
+        except Exception as e:
+            logger.debug(f"Emotional classification skipped: {e}")
+
         # Fire nerve impulse
         if self.config.get("nerve.publish_pulses", True):
             self._fire_nerve_pulse()
 
         # React to check results (trigger actions)
         if self.config.get("reactor.enabled", True):
-            action_results = self._reactor.react(self.state.checks)
+            # During maintenance windows, suppress non-critical actions
+            if in_maintenance and self._maintenance_suppress_actions:
+                critical_only = {
+                    name: result for name, result in self.state.checks.items()
+                    if result.severity == CheckSeverity.CRITICAL
+                }
+                action_results = self._reactor.react(critical_only)
+                logger.info(f"Maintenance window: only processing {len(critical_only)} critical checks")
+            else:
+                action_results = self._reactor.react(self.state.checks)
             for ar in action_results:
                 logger.info(
                     f"  🎯 Action {ar.action_name}: {ar.severity.value} — {ar.message}"
@@ -458,6 +542,10 @@ class HeartbeatDaemon:
                 for r in self.state.checks.values()
             ):
                 self.state.last_healthy_pulse = now
+
+        # v0.3.0: Update Prometheus metrics
+        if self._prometheus:
+            self._prometheus.update(self.state.to_dict())
 
         self.state.uptime_seconds = time.monotonic() - start_time + (
             self.state.uptime_seconds if self.state.pulse_count > 1 else 0
@@ -516,6 +604,7 @@ class HeartbeatDaemon:
                 "state": self.state.state.value,
                 "health_score": self._health_score.current,
                 "health_trend": self._health_score.trend,
+                "emotional_state": getattr(self.state, '_emotional_state', 'unknown'),
                 "checks": {
                     name: {
                         "severity": result.severity.value,
@@ -590,6 +679,29 @@ class HeartbeatDaemon:
                     pulse_count INTEGER
                 )
             """)
+            # v0.3.0: Skuld prediction fields
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS pulse_metrics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    pulse_count INTEGER NOT NULL,
+                    health_score REAL,
+                    health_trend TEXT,
+                    daemon_state TEXT,
+                    check_severities_json TEXT,
+                    circuit_breakers_json TEXT,
+                    emotional_state TEXT
+                )
+            """)
+            # Index for fast Skuld queries
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pulse_metrics_timestamp
+                ON pulse_metrics(timestamp)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pulse_metrics_health_score
+                ON pulse_metrics(health_score)
+            """)
             conn.commit()
 
     def _state_db_save(self) -> None:
@@ -614,6 +726,44 @@ class HeartbeatDaemon:
                     (state_dict["state"], checks_json, state_dict.get("pulse_count", 0))
                 )
                 conn.execute("DELETE FROM pulse_history WHERE id < (SELECT MAX(id) FROM pulse_history) - 1000")
+
+                # v0.3.0: Skuld metrics — store per-pulse health data for prediction
+                check_severities = {
+                    name: r.severity.value if isinstance(r, CheckResult) else str(r)
+                    for name, r in self.state.checks.items()
+                }
+                circuit_breaker_states = {
+                    name: breaker.stats for name, breaker in self._circuit_breakers.items()
+                }
+
+                # Determine emotional state from health score
+                emotion = "unknown"
+                if hasattr(self, '_health_score') and self._health_score._scores:
+                    from heartbeat.checks.skuld import TrendClassifier
+                    scores = self._health_score._scores
+                    trend = self._health_score.trend
+                    stability = self._health_score.stability
+                    emotion_data = TrendClassifier.classify(scores, trend, stability)
+                    emotion = emotion_data.get("emotion", "unknown")
+
+                conn.execute(
+                    """INSERT INTO pulse_metrics
+                    (pulse_count, health_score, health_trend, daemon_state,
+                     check_severities_json, circuit_breakers_json, emotional_state)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        self.state.pulse_count,
+                        self._health_score.current,
+                        self._health_score.trend,
+                        self.state.state.value,
+                        json.dumps(check_severities),
+                        json.dumps(circuit_breaker_states),
+                        emotion,
+                    )
+                )
+                # Keep last 10000 metrics for prediction (7 days at 1/min)
+                conn.execute("DELETE FROM pulse_metrics WHERE id < (SELECT MAX(id) FROM pulse_metrics) - 10000")
+
                 conn.commit()
         except Exception as e:
             logger.warning(f"State DB save failed: {e}")
@@ -650,6 +800,11 @@ class HeartbeatDaemon:
         logger.info("Shutting down...")
         self.state.state = DaemonState.SHUTTING_DOWN
         self._state_db_save()
+
+        # v0.3.0: Stop Prometheus exporter
+        if self._prometheus:
+            self._prometheus.stop()
+            logger.info("Prometheus metrics exporter stopped")
 
         if self.daemon_mode:
             self._daemon_ctx.release()

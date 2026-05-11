@@ -30,6 +30,7 @@ from heartbeat.actions.mjölnir import MjölnirAction
 from heartbeat.actions.gungnir import GungnirAction
 from heartbeat.actions.bifrǫst import BifrǫstAction
 from heartbeat.actions.eir_action import EirAction
+from heartbeat.actions.vor_action import VörAction
 
 __all__ = [
     "BaseAction",
@@ -42,4 +43,5 @@ __all__ = [
     "GungnirAction",
     "BifrǫstAction",
     "EirAction",
+    "VörAction",
 ]

@@ -1,10 +1,17 @@
 # 🔮 Skuld — The Third Norn (Roadmap)
 
-## From Present to Future: What Skuld Will Bring
+## ✅ v0.3.0 — Skuld (RELEASED 2026-05-11)
 
-In Norse mythology, the three Norns are Urðr (past), Verðandi (present), and Skuld (future). Our Verðandi monitors the present. Skuld will predict the future.
+All Skuld features have been implemented! See README changelog for details.
 
-## Planned Features (v0.3.0 — "Skuld")
+- ✅ **SkuldCheck** — Predictive health analysis (linear regression, anomaly detection, capacity prediction, emotional classification)
+- ✅ **Vör Action** — Pre-emptive healing that acts on Skuld's predictions
+- ✅ **Emotional Architecture** — 7 emotional states mapped from health + trend + stability
+- ✅ **Maintenance Windows** — Scheduled maintenance suppresses non-critical actions
+- ✅ **Prometheus Metrics** — 8 metrics exposed via `/metrics` HTTP endpoint
+- ✅ **pulse_metrics table** — Per-pulse health scores, trends, emotional states
+
+### Original Planned Features (v0.3.0 — "Skuld")
 
 ### 1. Predictive Health Scoring
 
