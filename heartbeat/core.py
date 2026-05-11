@@ -43,6 +43,7 @@ from heartbeat.paths import (
 from heartbeat.signals import SignalHandler, DaemonContext
 from heartbeat.checks import CHECK_REGISTRY
 from heartbeat.checks.base import BaseCheck, CheckResult, CheckSeverity
+from heartbeat.reactor import Reactor
 
 logger = logging.getLogger("verdandi.heartbeat")
 
@@ -132,6 +133,10 @@ class HeartbeatDaemon:
         for name, check_class in CHECK_REGISTRY.items():
             if self.config.get(f"checks.{name}", True):
                 self._checks[name] = check_class(self.config)
+
+        # Initialize reactor (check → action bridge)
+        dry_run = self.config.get("reactor.dry_run", True)  # Default dry-run for safety
+        self._reactor = Reactor(config=self.config, dry_run=dry_run)
 
         self._running = False
         self._pulse_count = 0
@@ -235,6 +240,14 @@ class HeartbeatDaemon:
         # Fire nerve impulse
         if self.config.get("nerve.publish_pulses", True):
             self._fire_nerve_pulse()
+
+        # React to check results (trigger actions)
+        if self.config.get("reactor.enabled", True):
+            action_results = self._reactor.react(self.state.checks)
+            for ar in action_results:
+                logger.info(
+                    f"  🎯 Action {ar.action_name}: {ar.severity.value} — {ar.message}"
+                )
 
         # Persist state
         self.state.last_pulse = now

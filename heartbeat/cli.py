@@ -31,6 +31,7 @@ from heartbeat.paths import (
     get_log_path, get_platform_info, ensure_dirs, resolve_paths,
 )
 from heartbeat.core import HeartbeatDaemon, DaemonState
+from heartbeat.reactor import Reactor
 
 
 def cmd_start(args):
@@ -353,6 +354,51 @@ def cmd_paths(args):
     return 0
 
 
+def cmd_react(args):
+    """Run checks and show what actions would be triggered."""
+    config = HeartbeatConfig(
+        config_path=Path(args.config) if args.config else None
+    )
+    dry_run = not args.execute  # Default is dry-run; --execute makes it real
+    
+    daemon = HeartbeatDaemon(config=config, daemon=False)
+    daemon._state_db_init()
+    
+    print(f"🎯 Verðandi Reactor — mode: {'DRY-RUN' if dry_run else 'EXECUTE'}")
+    print(f"")
+    
+    # Run a single pulse to get check results
+    state = daemon.pulse()
+    
+    # Show check results
+    print(f"📋 Check Results:")
+    for name, result in state.checks.items():
+        icons = {"ok": "✅", "warning": "⚠️", "critical": "🚨", "unknown": "❓"}
+        icon = icons.get(result.severity.value, "❓")
+        print(f"   {icon} {name}: {result.severity.value} — {result.message}")
+    
+    # Run reactor
+    reactor = Reactor(config=config, dry_run=dry_run)
+    action_results = reactor.react(state.checks)
+    
+    print(f"")
+    print(f"🎯 Action Results ({len(action_results)} triggered):")
+    if not action_results:
+        print(f"   No actions triggered — all checks OK or in cooldown")
+    else:
+        for ar in action_results:
+            icons = {"success": "✅", "partial": "⚠️", "failed": "❌", "skipped": "⏭️", "dry_run": "🔮"}
+            icon = icons.get(ar.severity.value, "❓")
+            print(f"   {icon} {ar.action_name}: {ar.severity.value}")
+            print(f"      {ar.message}")
+            if ar.targets_affected:
+                print(f"      Affected: {', '.join(ar.targets_affected[:5])}")
+            if ar.targets_failed:
+                print(f"      Failed: {', '.join(ar.targets_failed[:5])}")
+    
+    return 0
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -384,6 +430,11 @@ def main():
     # paths
     sub.add_parser("paths", help="Show resolved path configuration")
     
+    # react
+    sp = sub.add_parser("react", help="Run checks and show what actions would be triggered")
+    sp.add_argument("--dry-run", action="store_true", default=True, help="Dry-run mode (default: True)")
+    sp.add_argument("--execute", action="store_true", help="Actually execute actions (not dry-run)")
+    
     args = parser.parse_args()
     
     if not args.command:
@@ -397,6 +448,7 @@ def main():
         "pulse": cmd_pulse,
         "config": cmd_config,
         "paths": cmd_paths,
+        "react": cmd_react,
     }
     
     return commands[args.command](args)

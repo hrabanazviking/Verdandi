@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Optional
 
 from heartbeat.checks.base import BaseCheck, CheckResult, CheckSeverity
+from heartbeat.paths import get_state_dir
 
 
 class UrdrCheck(BaseCheck):

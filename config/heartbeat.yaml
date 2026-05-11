@@ -67,10 +67,16 @@ nerve:
   fallback_to_file: true        # Write to file if socket unavailable
 
 reactor:
-  # Reactor integration
-  run_on_degraded: true         # Run reactor when state degrades
-  run_on_critical: true          # Run reactor in critical state
-  reactor_path: ""              # Empty = use default from paths
+  # Reactor bridges checks → actions
+  enabled: true               # Enable the reactor
+  dry_run: true               # Start in dry-run (report only, no action)
+  rules:
+    # Custom rules override defaults. Format:
+    # - check: "projects"        # Which check triggers
+    #   action: "auto_push"      # Which action to invoke
+    #   min_severity: "warning"   # Minimum severity to trigger
+    #   conditions: {}           # Additional conditions on check details
+    #   enabled: true
 
 logging:
   level: "INFO"
