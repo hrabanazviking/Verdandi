@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from eir import (
+from verdandi.eir import (
     EirConfig,
     EirPipeline,
     EffortLevel,
@@ -26,7 +26,7 @@ from eir import (
     ModelRouter,
     CHECK_REGISTRY,
 )
-from eir.config import set_config
+from verdandi.eir.config import set_config
 
 
 # ─── Fixtures ──────────────────────────────────────────────────────────
@@ -113,7 +113,7 @@ class TestEffortProfiles:
     """Layer 3: Named effort profiles are well-formed."""
 
     def test_quick_profile_minimal(self):
-        from eir import QUICK_PROFILE
+        from verdandi.eir import QUICK_PROFILE
         # Quick uses named backend layers (mimir, huginn, etc.), not "monitoring"
         assert "mimir" in QUICK_PROFILE.layers
         quick_checks = []
@@ -124,7 +124,7 @@ class TestEffortProfiles:
         assert "promotion" not in quick_checks
 
     def test_deep_profile_comprehensive(self):
-        from eir import DEEP_PROFILE
+        from verdandi.eir import DEEP_PROFILE
         all_checks = []
         for layer in DEEP_PROFILE.layers.values():
             all_checks.extend(layer.checks)
@@ -133,7 +133,7 @@ class TestEffortProfiles:
         assert "dedup" in all_checks
 
     def test_profiles_dict_has_all_levels(self):
-        from eir import PROFILES
+        from verdandi.eir import PROFILES
         # PROFILES uses string keys, not EffortLevel enum keys
         assert "quick" in PROFILES
         assert "standard" in PROFILES
@@ -141,12 +141,12 @@ class TestEffortProfiles:
         assert "emergency" in PROFILES
 
     def test_get_profile(self):
-        from eir import get_profile
+        from verdandi.eir import get_profile
         p = get_profile(EffortLevel.STANDARD)
         assert isinstance(p, EffortProfile)
 
     def test_merge_profiles(self):
-        from eir import merge_profiles, QUICK_PROFILE, DEEP_PROFILE
+        from verdandi.eir import merge_profiles, QUICK_PROFILE, DEEP_PROFILE
         # merge_profiles needs dicts {str: EffortProfile}, not EffortProfile objects
         merged = merge_profiles(
             {"quick": QUICK_PROFILE},
@@ -162,7 +162,7 @@ class TestYAMLLayers:
     """Layer 4: YAML-driven layer configuration."""
 
     def test_load_yaml_profiles(self, tmp_dir):
-        from eir.layers import load_profiles_from_yaml
+        from verdandi.eir.layers import load_profiles_from_yaml
 
         yaml_path = tmp_dir / "test_layers.yaml"
         # Must use the "effort_levels" top-level key format
@@ -230,7 +230,7 @@ class TestYAMLLayers:
         assert "mimir" in quick.layers
 
     def test_load_nonexistent_yaml_returns_defaults(self):
-        from eir.layers import load_profiles_from_yaml, PROFILES
+        from verdandi.eir.layers import load_profiles_from_yaml, PROFILES
         profiles = load_profiles_from_yaml(Path("/nonexistent/path"))
         # Should return built-in defaults
         assert len(profiles) > 0 or True  # May return empty if file not found
@@ -380,7 +380,7 @@ class TestConfig:
 
     def test_set_and_get_config(self, eir_config):
         set_config(eir_config)
-        from eir.config import get_config
+        from verdandi.eir.config import get_config
         retrieved = get_config()
         assert retrieved.mimir_db_path == eir_config.mimir_db_path
 
@@ -410,7 +410,7 @@ class TestBackup:
 
     def test_backup_rejects_py_files(self, tmp_dir):
         """The bug that started it all — Eir must not copy .py files as .db backups."""
-        from eir.config import EirConfig
+        from verdandi.eir.config import EirConfig
         import sqlite3
 
         # Create an actual .py file pretending to be the mimir path (the original bug)
