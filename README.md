@@ -305,35 +305,210 @@ python3 -m heartbeat.cli config
 python3 -m heartbeat.cli --version
 ```
 
+### Circuit Breaker — Heimdall's Watch
+
+Each check is protected by a **circuit breaker**, inspired by Heimdall standing at the Bifrǫst. When a check fails repeatedly, the circuit breaker **opens** and silences the check temporarily, preventing cascading failures.
+
+```
+CLOSED  ──(5 failures)──►  OPEN
+  ▲                         │
+  │                         │(cooldown: 300s)
+  │                         ▼
+  └────(success)────────  HALF_OPEN
+```
+
+- **CLOSED**: Normal operation — calls pass through
+- **OPEN**: Too many failures — calls are blocked, last known result is used
+- **HALF_OPEN**: Cooldown elapsed — one probe attempt is allowed
+
+Configure per-check:
+```yaml
+checks:
+  eir:
+    circuit_breaker_threshold: 5    # Failures before opening
+    circuit_breaker_cooldown: 300   # Seconds before half-open probe
+```
+
+### Health Score — The Norn's Thread
+
+The daemon maintains a **health score** from 0–100, calculated as an Exponential Moving Average (EMA) of check severities:
+
+| Severity | Score |
+|----------|-------|
+| OK | 100 |
+| UNKNOWN | 75 |
+| WARNING | 50 |
+| CRITICAL | 0 |
+
+The score includes **trend detection** (improving/stable/degrading) and **stability** (standard deviation):
+
+```json
+{
+  "health_score": 87.5,
+  "health_trend": "stable",
+  "health_stability": 3.2
+}
+```
+
+- **Trend**: Calculated from the slope of the last N health scores
+- **Stability**: Standard deviation — low means consistent, high means erratic
+
+Configure the window:
+```yaml
+heartbeat:
+  health_score_window: 100  # EMA window size (default)
+```
+
+### State Machine — The Six States of Consciousness
+
+The daemon operates as a finite state machine, modeling different levels of system awareness:
+
+```
+    INITIALIZING
+         │
+         ▼
+      RUNNING ◄──────┐
+      │    │          │
+      │    │          │ RECOVERING
+      │    ▼          │     ▲
+      │  DEGRADED ────┤     │
+      │    │           │     │
+      │    ▼           │     │
+      │  CRITICAL ─────┘     │
+      │    │                 │
+      │    └─────improving───┘
+      │
+      ▼
+   SHUTTING_DOWN
+```
+
+- **INITIALIZING**: Waking up — first pulse hasn't completed yet
+- **RUNNING**: All systems normal — conscious and alert
+- **DEGRADED**: One or more WARNING checks — impaired but functional
+- **CRITICAL**: One or more CRITICAL checks — emergency response needed
+- **RECOVERING**: Was DEGRADED/CRITICAL, now improving — convalescing
+- **SHUTTING_DOWN**: Gracefully powering off — falling asleep
+
+State transitions require **two consecutive OK pulses** to move from RECOVERING back to RUNNING (hysteresis to prevent flapping).
+
 ### Configuration
 
 Heartbeat reads from `~/.hermes/state/config/heartbeat.yaml` (or `VERDANDI_HOME` env):
 
 ```yaml
 heartbeat:
-  interval_seconds: 60
-  jitter_seconds: 5
-  startup_delay_seconds: 10
+  interval_seconds: 60          # Seconds between pulses
+  jitter_seconds: 5              # Random ± to prevent herd
+  startup_delay_seconds: 10      # Delay before first pulse
+  health_score_window: 100       # EMA window for health trending
+
+checks:
+  eir:                           # Health: CPU, RAM, disk, temperature
+    enabled: true
+    circuit_breaker_threshold: 5
+    circuit_breaker_cooldown: 300
+    thresholds:
+      cpu_warning_percent: 80
+      cpu_critical_percent: 95
+      ram_warning_percent: 80
+      ram_critical_percent: 95
+      disk_warning_percent: 80
+      disk_critical_percent: 95
+      temp_warning_celsius: 70
+      temp_critical_celsius: 80
+
+  huginn:                       # Projects: git status
+    enabled: true
+    circuit_breaker_threshold: 3
+    circuit_breaker_cooldown: 180
+    paths:
+      - "Verdandi"
+      - "Mimir"
+
+  mimir:                        # Memory: DB integrity
+    enabled: true
+    circuit_breaker_threshold: 5
+    circuit_breaker_cooldown: 600
+    thresholds:
+      db_size_warning_mb: 100
+      db_size_critical_mb: 500
+
+  urdr:                         # Schedule: upcoming events
+    enabled: true
+    circuit_breaker_threshold: 3
+    circuit_breaker_cooldown: 300
 
 reactor:
   enabled: true
   dry_run: true  # Set false to execute actions automatically
+  default_cooldown_seconds: 300
   rules:
-    - check: projects
-      action: auto_push
-      min_severity: warning
-    - check: schedule
-      action: auto_restart
-      min_severity: warning
-    - check: memory
-      action: auto_cleanup
-      min_severity: critical
-    - check: memory
+    - trigger: "health:cpu"
+      severity: critical
+      action: restart_services
+      cooldown_seconds: 600
+    - trigger: "memory:mimir_db"
+      severity: critical
       action: auto_heal
-      min_severity: critical
-    - check: health
-      action: auto_cleanup
-      min_severity: critical
+      cooldown_seconds: 1800
+    - trigger: "project:*"
+      severity: warning
+      action: notify
+      cooldown_seconds: 3600
+
+nerve:
+  publish_pulses: true
+  socket_path: "~/.hermes/state/runa.sock"
+  fallback_to_file: true
+
+logging:
+  level: "INFO"
+  file_max_bytes: 10485760      # 10 MB
+  file_backup_count: 5
+```
+
+### Installation
+
+**From PyPI** (when published):
+```bash
+pip install verdandi-heartbeat
+```
+
+**From source** (recommended for Pi):
+```bash
+git clone https://github.com/hrabanazviking/Verdandi.git
+cd Verdandi
+pip install -e .
+```
+
+**As a systemd service** (Linux, recommended for production):
+```bash
+# Install the service (creates dirs, copies unit file, enables service)
+bash scripts/install_heartbeat.sh
+
+# Check status
+systemctl --user status verdandi-heartbeat
+
+# View logs
+journalctl --user -u verdandi-heartbeat -f
+```
+
+**Uninstall**:
+```bash
+bash scripts/uninstall_heartbeat.sh
+```
+
+**Quick verification**:
+```bash
+# Take a single pulse — see if everything works
+python3 -m heartbeat pulse --once
+
+# Run in daemon mode — continuous pulse loop
+python3 -m heartbeat pulse --loop
+
+# Or use the entry point
+verdandi-heartbeat pulse --once
+verdandi-heartbeat pulse --loop
 ```
 
 ---
@@ -1321,6 +1496,29 @@ python3 nervous_system.py stop
 
 ## Changelog
 
+### v0.2.1 — Great Forge Wave (2026-05-11)
+
+**Code hardening:**
+- Fixed SQLite connection leaks — all `sqlite3.connect()` calls now use context managers
+- Added `CircuitBreaker` pattern (CLOSED→OPEN→HALF_OPEN) for fail-fast check/action protection
+- Added `HealthScore` class — EMA-based 0-100 health scoring with trend detection
+- Integrated circuit breakers and health scores into the pulse loop
+- Health score, trend, and circuit breaker stats now in nerve impulses and state dict
+
+**Documentation (24 new guides in `docs/`):**
+- Architecture, quick start, configuration reference
+- Circuit breaker pattern, health score, state machine deep dive
+- Self-healing pipeline, security, monitoring
+- Integration guide (7 patterns), AI agent integration (6 patterns)
+- Nerve hub protocol specification
+- Raspberry Pi optimization, performance, cross-platform
+- Troubleshooting (10 common issues), testing guide, contributing
+- Norse mythology mapping, AGI architecture patterns, thread safety
+- Roadmap (Skuld v0.3.0, Valhalla v0.4.0), Heimdall watchman
+- v0.2.0 full changelog
+
+**489 tests passing** (264 core + 149 checks + 75 actions + 49 integration)
+
 ### v0.2.0 — Hjartsláttur (2026-05-11)
 
 **The Norn of Becoming feels her own pulse.**
@@ -1372,6 +1570,50 @@ python3 nervous_system.py stop
 ---
 
 ![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg)
+
+---
+
+## 📚 Documentation
+
+Full guides are available in the [`docs/`](docs/) directory:
+
+### Getting Started
+- **[Quick Start Guide](docs/quick-start.md)** — Install and run in 5 minutes
+- **[Configuration Reference](docs/configuration-reference.md)** — Every YAML option explained
+- **[Raspberry Pi Guide](docs/raspberry-pi-guide.md)** — Pi-specific optimization and setup
+
+### Architecture & Design
+- **[Architecture](docs/architecture.md)** — Complete system overview with diagrams
+- **[State Machine](docs/state-machine.md)** — The 6-state FSM, transition rules, hysteresis
+- **[Circuit Breaker Pattern](docs/circuit-breaker-pattern.md)** — Heimdall's fail-fast protection
+- **[Health Score](docs/health-score.md)** — EMA scoring and trend detection
+- **[Self-Healing](docs/self-healing.md)** — The detection → diagnosis → action pipeline
+- **[Norse Mapping](docs/norse-mapping.md)** — Why Norse names and how they map to code
+
+### Integration
+- **[Integration Guide](docs/integration-guide.md)** — 7 patterns (Python, Hermes, JSONL, Prometheus, Webhooks, Home Assistant, Cron)
+- **[AI Agent Integration](docs/ai-agent-integration.md)** — 6 patterns (Hermes, LangChain, REST, WebSocket, MQTT, Home Assistant)
+- **[Nerve Hub Protocol](docs/nerve-hub-protocol.md)** — Socket protocol specification
+- **[Cross-Platform Guide](docs/cross-platform-guide.md)** — Linux, macOS, WSL, Windows, Docker
+
+### Operations
+- **[Troubleshooting](docs/troubleshooting.md)** — 10 common issues with diagnostics
+- **[Monitoring & Observability](docs/monitoring.md)** — Logs, queries, future Grafana
+- **[Performance Guide](docs/performance-guide.md)** — Benchmarks, memory profile, optimization
+- **[Security](docs/security.md)** — Threat model, file permissions, action safety
+
+### Advanced
+- **[AGI Architecture Patterns](docs/agi-architecture-patterns.md)** — Consciousness, self-awareness, autopoiesis
+- **[Thread Safety](docs/thread-safety.md)** — Concurrency model, SQLite WAL, future threading
+- **[Heimdall — The Watchman](docs/heimdall-watchman.md)** — Invariant patterns and system guardianship
+- **[Roadmap](docs/roadmap.md)** — v0.3.0 Skuld (prediction), v0.4.0 Valhalla (distributed)
+
+### Contributing
+- **[Contributing Guide](docs/contributing.md)** — How to add checks, actions, and tests
+- **[Testing Guide](docs/testing-guide.md)** — Running and writing tests
+
+### Reference
+- **[Changelog v0.2.0](docs/changelog-v0.2.0.md)** — Complete changelog for the Hjartsláttur release
 
 ---
 
