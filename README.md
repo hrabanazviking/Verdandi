@@ -53,6 +53,7 @@ Your AI agent runs multiple processes — a Telegram session here, a cron job th
 1. [What It Is](#what-it-is)
 2. [Philosophy — Consciousness as Routing](#philosophy--consciousness-as-routing)
 3. [Architecture](#architecture)
+3.5. [Hjartsláttur — The Heartbeat Daemon](#hjartsláttur--the-heartbeat-daemon)
 4. [Quick Start](#quick-start)
 5. [CLI Reference](#cli-reference)
 6. [Python API Reference](#python-api-reference)
@@ -97,12 +98,13 @@ Verðandi provides a **single local event bus**:
 
 ### Components
 
-| File | Role |
+|| File | Role |
 |------|------|
 | `nervous_system.py` | The Nerve Hub — UDS server, publisher, subscriber, feed manager, CLI |
 | `conversation_logger.py` | Session tracker — logs conversation lifecycle events and fires them through the nerve |
 | `context_injector.py` | Cron adapter — injects context into cron job prompts, provides logging shim |
 | `reactor.py` | Reaction engine — reads the past and present, generates prioritized directives |
+| `heartbeat/` | **Hjartsláttur** — Self-awareness daemon that monitors health, projects, memory, and schedule |
 
 ---
 
@@ -223,6 +225,115 @@ The loop closes: **Urðr records → Verðandi routes → Skuld directs → acti
 │  │  Thin adapter: CLI shim + context assembly for cron jobs     │
 │  └──────────────────────────────────────────────────────────────│
 └─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Hjartsláttur — The Heartbeat Daemon
+
+**Hjartsláttur** (*HEART-slow-tur*, Old Norse for "heartbeat") is Verðandi's self-awareness daemon — a periodic pulse that checks the system's health, projects, memory, and schedule, then reacts to problems it finds.
+
+### Architecture
+
+```
+┌────────────────────────────────────────────┐
+│              HEARTBEAT PULSE CYCLE          │
+│                                            │
+│  ┌──────┐   ┌──────┐   ┌──────┐   ┌─────┐│
+│  │ Eir  │   │Huginn│   │Mímir │   │Urðr ││
+│  │Health│   │Proj. │   │Memory│   │Sched││
+│  └──┬───┘   └──┬───┘   └──┬───┘   └──┬──┘│
+│     └────────────┴────────────┴─────────┘  │
+│                    │                        │
+│              ┌─────┴──────┐                 │
+│              │  Reactor   │                 │
+│              │  (checks → │                 │
+│              │  actions)  │                 │
+│              └─────┬──────┘                 │
+│     ┌─────────────┼─────────────┐            │
+│  ┌──┴───┐  ┌─────┴────┐  ┌────┴───┐  ┌────┴───┐
+│  │Mjölnir│  │ Gungnir  │  │Bifrǫst │  │  Eir   │
+│  │AutoPush│ │AutoRestart│ │CleanUp │  │AutoHeal│
+│  └──────┘  └──────────┘  └────────┘  └────────┘│
+└────────────────────────────────────────────┘
+```
+
+### Four Senses (Wave 2 — Check Modules)
+
+| Module | Norse Name | What it monitors |
+|--------|------------|-------------------|
+| `checks/eir.py` | **Eir** — Goddess of Healing | CPU temperature, RAM, disk, Pi throttle flags |
+| `checks/huginn.py` | **Huginn** — Odin's Thought Raven | Git repos: unpushed commits, dirty files, stale branches |
+| `checks/mimir.py` | **Mímir** — The Well of Wisdom | Memory DB integrity, conversation log, nerve feed freshness, kista vault |
+| `checks/urdr.py` | **Urðr** — The Norn of the Past | Cron jobs, systemd services, stuck processes, nerve hub socket |
+
+### Four Acts (Wave 3 — Action Modules)
+
+| Module | Norse Name | What it does |
+|--------|------------|--------------|
+| `actions/mjölnir.py` | **Mjölnir** — Thor's Hammer | Auto-commits and pushes dirty/unpushed git repos |
+| `actions/gungnir.py` | **Gungnir** — Odin's Spear | Restarts crashed systemd services (max 3 attempts) |
+| `actions/bifrǫst.py` | **Bifrǫst** — The Burning Bridge | Prunes logs, vacuums DBs, rotates files |
+| `actions/eir_action.py` | **Eir** — Healing Hand | Repairs corrupted SQLite DBs, heals JSONL, ensures dirs |
+
+### Reactor
+
+The **Reactor** bridges checks → actions with configurable rules, cooldowns, and dry-run mode:
+
+- **Dry-run by default** — reports what it *would* do without executing
+- **Configurable rules** — which checks trigger which actions at which severity
+- **Cooldown timers** — prevents rapid-fire actions on the same trigger
+- **Audit logging** — every reaction is recorded
+
+### CLI Commands
+
+```bash
+# Take a pulse — runs all checks and reports status
+python3 -m heartbeat.cli pulse
+
+# React — run checks then evaluate actions
+python3 -m heartbeat.cli react          # dry-run (safe)
+python3 -m heartbeat.cli react --execute  # actually execute actions
+
+# Show resolved paths
+python3 -m heartbeat.cli paths
+
+# Show current configuration
+python3 -m heartbeat.cli config
+
+# Show version
+python3 -m heartbeat.cli --version
+```
+
+### Configuration
+
+Heartbeat reads from `~/.hermes/state/config/heartbeat.yaml` (or `VERDANDI_HOME` env):
+
+```yaml
+heartbeat:
+  interval_seconds: 60
+  jitter_seconds: 5
+  startup_delay_seconds: 10
+
+reactor:
+  enabled: true
+  dry_run: true  # Set false to execute actions automatically
+  rules:
+    - check: projects
+      action: auto_push
+      min_severity: warning
+    - check: schedule
+      action: auto_restart
+      min_severity: warning
+    - check: memory
+      action: auto_cleanup
+      min_severity: critical
+    - check: memory
+      action: auto_heal
+      min_severity: critical
+    - check: health
+      action: auto_cleanup
+      min_severity: critical
 ```
 
 ---
@@ -1210,6 +1321,24 @@ python3 nervous_system.py stop
 
 ## Changelog
 
+### v0.2.0 — Hjartsláttur (2026-05-11)
+
+**The Norn of Becoming feels her own pulse.**
+
+- ✅ **Wave 1 — The Skeleton**: Core daemon, state machine, config, paths (Vegvísir), signals, CLI with `pulse`/`paths`/`config` commands
+- ✅ **Wave 2 — The Senses**: Four pluggable check modules (Eir, Huginn, Mímir, Urðr) with BaseCheck abstract class and CHECK_REGISTRY
+- ✅ **Wave 3 — The Voice**: Four pluggable action modules (Mjölnir, Gungnir, Bifrǫst, Eir) with BaseAction, ACTION_REGISTRY, and Reactor bridge
+- ✅ **Reactor**: Configurable rules mapping check severity → actions, cooldown timers, dry-run mode, audit logging
+- ✅ **CLI `react` command**: Evaluate and optionally execute reactions from the command line
+- ✅ **489 tests passing** (264 heartbeat core + 149 checks + 75 actions/reactor + 49 integration)
+- ✅ **Cross-platform path resolution**: Linux, macOS, WSL, iOS, Raspberry Pi detection
+- ✅ **Self-healing**: Component failures degrade gracefully — bad checks return UNKNOWN, bad actions return FAILED
+
+*Wave 1 forged by Runa Gridweaver Freyjasdottir*
+*Wave 2 senses woven by Eir, Huginn, Mímir, and Urðr*
+*Wave 3 voice given by Mjölnir, Gungnir, Bifrǫst, and Eir*
+*Aegis assured by Sólrún Hvítmynd, Auditor of Mythic Engineering*
+
 ### v0.1.0 — Initial Release (2026-05-10)
 
 **The Norn of Becoming takes her seat at the loom.**
@@ -1297,6 +1426,12 @@ SOFTWARE.
 | **Mímir** | MEE-mir | The well of wisdom beneath Yggdrasil's root; also the wise being who guards it | The memory system: draws accumulated wisdom from Urðr's well — the stored past that can be consulted |
 | **ørlǫg** | UR-luhg | "Primal law" — the fundamental order of fate; the sequence in which events are woven | The `_seq` counter: the monotonically increasing sequence number that gives events their narrative order |
 | **Yggdrasil** | IG-druh-sil | The World Tree, connecting all nine realms | The entire system architecture: roots (feeds), trunk (hub), branches (subscribers) — one organism |
+| **Hjartsláttur** | HEART-slow-tur | "Heartbeat" — the rhythm of a living being | The heartbeat daemon: periodic pulse that monitors and reacts to system health |
+| **Eir** | AY-r | Goddess of healing and medicine | The health check (CPU, RAM, disk, Pi throttle) and the auto-heal action |
+| **Huginn** | HOO-gin | Odin's raven of thought, "the one who flies out every morning" | The project watcher: scans all git repos for unpushed, dirty, or stale state |
+| **Mjölnir** | MYOL-neer | Thor's hammer, "the crusher" — always returns to Thor's hand | The auto-push action: force-commits and pushes dirty repos |
+| **Gungnir** | GOON-gneer | Odin's spear, "the shaking one" — always hits its mark | The auto-restart action: restarts crashed services with precision |
+| **Bifrǫst** | BIV-rost | The burning rainbow bridge between realms | The auto-cleanup action: burns away accumulated cruft (logs, temp files) |
 
 ---
 
