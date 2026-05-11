@@ -1,6 +1,6 @@
 [project]
 name = "verdandi"
-version = "0.2.0"
+version = "0.3.0"
 description = "VERÐANDI — The Norn of Becoming. Unix domain socket event bus + heartbeat daemon for AI self-awareness, self-healing, and unified consciousness."
 readme = "README.md"
 license = {text = "MIT"}

@@ -8,10 +8,10 @@ Active self-care.
 Designed for Hermes Agent, adaptable to any AI agent. File-location-agnostic.
 Best on Raspberry Pi, works on all Linux, macOS, iOS, and WSL.
 
-This is Wave 1 — The Skeleton. The bones upon which flesh will grow.
+This is v0.3.0 — Skuld. The Norn of the Future. Prediction and pre-emption.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __norse_name__ = "Verðandi Hjartsláttur"
 __description__ = "The heartbeat of becoming — AGI-focused self-awareness daemon"
 
