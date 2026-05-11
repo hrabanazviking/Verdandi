@@ -33,7 +33,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick Start</a> · <a href="#philosophy">Philosophy</a> · <a href="#architecture">Architecture</a> · <a href="#api-reference">API</a> · <a href="#event-protocol">Protocol</a> · <a href="#configuration">Config</a> · <a href="#self-healing">Robustness</a> · <a href="#integration">Integration</a> · <a href="#troubleshooting">Troubleshooting</a>
+  <a href="#quick-start">Quick Start</a> · <a href="#philosophy--consciousness-as-routing">Philosophy</a> · <a href="#architecture">Architecture</a> · <a href="#hjartsláttur--the-heartbeat-daemon">Heartbeat</a> · <a href="#cli-reference">CLI</a> · <a href="#python-api-reference">API</a> · <a href="#event-protocol-specification">Protocol</a> · <a href="#configuration-1">Config</a> · <a href="#self-healing-and-robustness">Robustness</a> · <a href="#integration-guide">Integration</a> · <a href="#troubleshooting">Troubleshooting</a> · <a href="#documentation">Docs</a>
 </p>
 
 ---
