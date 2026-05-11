@@ -1683,7 +1683,7 @@ prometheus:
   host: "0.0.0.0"
 ```
 
-**Tests:** 524 passing (35 new Skuld tests)
+**Tests:** 558 passing (verified 2026-05-11)
 **Files:** 4 new modules, 11 files modified
 
 ---
