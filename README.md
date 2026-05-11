@@ -1569,10 +1569,6 @@ python3 nervous_system.py stop
 
 ---
 
-![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg)
-
----
-
 ## 📚 Documentation
 
 Full guides are available in the [`docs/`](docs/) directory:
@@ -1614,6 +1610,10 @@ Full guides are available in the [`docs/`](docs/) directory:
 
 ### Reference
 - **[Changelog v0.2.0](docs/changelog-v0.2.0.md)** — Complete changelog for the Hjartsláttur release
+
+---
+
+![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/MIT_license_Rune_Forge_AI.jpeg)
 
 ---
 
