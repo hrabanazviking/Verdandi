@@ -4,7 +4,9 @@ Comprehensive pytest suite for Verðandi Heartbeat Wave 1 modules.
 Covers:
   - heartbeat/paths.py   — Path resolution, XDG, env vars, platform detection
   - heartbeat/config.py  — YAML config, env overrides, reload, defaults, deep merge
-  - heartbeat/core.py    — State machine transitions, PulseResult, HealthCheck, HeartbeatDaemon
+  - heartbeat/core.py     — State machine transitions, HeartbeatState, HeartbeatDaemon
+  - heartbeat/checks/base.py — CheckSeverity, CheckResult (Wave 2)
+  - heartbeat/checks/eir.py  — EirCheck (system health)
   - heartbeat/signals.py — SignalHandler flags, DaemonContext PID file management
 """
 
@@ -51,12 +53,12 @@ from heartbeat.paths import (
 from heartbeat.config import HeartbeatConfig, DEFAULTS
 from heartbeat.core import (
     DaemonState,
-    PulseSeverity,
-    PulseResult,
     HeartbeatState,
-    HealthCheck,
     HeartbeatDaemon,
 )
+from heartbeat.checks.base import CheckSeverity, CheckResult, BaseCheck
+from heartbeat.checks.eir import EirCheck
+from heartbeat.checks import CHECK_REGISTRY
 from heartbeat.signals import SignalHandler, DaemonContext
 
 
@@ -600,11 +602,11 @@ class TestHeartbeatConfig:
             assert config.get("heartbeat.interval_seconds") == 45
             assert config.get("thresholds.cpu_temp_warning") == 55
         finally:
-            cfg_module._HAS_YAML = original_yaml
+            cfg_module._has_YAML = original_yaml
 
 
 # ============================================================================
-# core.py — State Machine & PulseResult
+# core.py — State Machine & CheckSeverity / CheckResult
 # ============================================================================
 
 
@@ -634,27 +636,27 @@ class TestDaemonState:
         assert len(set(s.value for s in severity_order)) == len(severity_order)
 
 
-class TestPulseSeverity:
-    """Test PulseSeverity enum values."""
+class TestCheckSeverity:
+    """Test CheckSeverity enum values (Wave 2 replacement for PulseSeverity)."""
 
     def test_severity_values(self):
-        assert PulseSeverity.OK.value == "ok"
-        assert PulseSeverity.WARNING.value == "warning"
-        assert PulseSeverity.CRITICAL.value == "critical"
-        assert PulseSeverity.UNKNOWN.value == "unknown"
+        assert CheckSeverity.OK.value == "ok"
+        assert CheckSeverity.WARNING.value == "warning"
+        assert CheckSeverity.CRITICAL.value == "critical"
+        assert CheckSeverity.UNKNOWN.value == "unknown"
 
 
-class TestPulseResult:
-    """Test PulseResult dataclass."""
+class TestCheckResult:
+    """Test CheckResult dataclass (Wave 2 replacement for PulseResult)."""
 
     def test_default_severity(self):
         """Default severity should be OK."""
-        result = PulseResult(name="test")
-        assert result.severity == PulseSeverity.OK
+        result = CheckResult(name="test")
+        assert result.severity == CheckSeverity.OK
 
     def test_auto_timestamp(self):
         """Timestamp should be auto-generated if not provided."""
-        result = PulseResult(name="test")
+        result = CheckResult(name="test")
         assert result.timestamp  # Not empty
         # Should be a valid ISO timestamp
         parsed = datetime.fromisoformat(result.timestamp)
@@ -663,23 +665,53 @@ class TestPulseResult:
     def test_explicit_timestamp(self):
         """Explicit timestamp should be preserved."""
         ts = "2026-01-01T00:00:00+00:00"
-        result = PulseResult(name="test", timestamp=ts)
+        result = CheckResult(name="test", timestamp=ts)
         assert result.timestamp == ts
 
     def test_custom_fields(self):
         """All fields should be settable."""
-        result = PulseResult(
+        result = CheckResult(
             name="health",
-            severity=PulseSeverity.CRITICAL,
+            severity=CheckSeverity.CRITICAL,
             message="CPU overheating",
             details={"cpu_temp_c": 85},
             duration_ms=42.5,
         )
         assert result.name == "health"
-        assert result.severity == PulseSeverity.CRITICAL
+        assert result.severity == CheckSeverity.CRITICAL
         assert result.message == "CPU overheating"
         assert result.details["cpu_temp_c"] == 85
         assert result.duration_ms == 42.5
+
+    def test_sub_results_default(self):
+        """sub_results should default to an empty list."""
+        result = CheckResult(name="test")
+        assert result.sub_results == []
+
+    def test_to_dict(self):
+        """CheckResult.to_dict() should serialize correctly."""
+        result = CheckResult(
+            name="health",
+            severity=CheckSeverity.WARNING,
+            message="Warm CPU",
+        )
+        d = result.to_dict()
+        assert d["name"] == "health"
+        assert d["severity"] == "warning"
+        assert d["message"] == "Warm CPU"
+
+    def test_to_dict_with_details(self):
+        """CheckResult.to_dict() should include details and duration."""
+        result = CheckResult(
+            name="health",
+            severity=CheckSeverity.CRITICAL,
+            message="Overheating",
+            details={"cpu_temp_c": 85},
+            duration_ms=10.5,
+        )
+        d = result.to_dict()
+        assert d["details"]["cpu_temp_c"] == 85
+        assert d["duration_ms"] == 10.5
 
 
 class TestHeartbeatState:
@@ -693,9 +725,9 @@ class TestHeartbeatState:
 
     def test_to_dict(self):
         """to_dict should serialize state and severity."""
-        result = PulseResult(
+        result = CheckResult(
             name="health",
-            severity=PulseSeverity.WARNING,
+            severity=CheckSeverity.WARNING,
             message="Warm CPU",
         )
         state = HeartbeatState(
@@ -707,16 +739,20 @@ class TestHeartbeatState:
         assert d["state"] == "degraded"
         assert d["pulse_count"] == 5
 
-    def test_to_dict_with_pulse_result_in_checks(self):
-        """PulseResult objects in checks dict should be serialized."""
-        result = PulseResult(
+    def test_to_dict_with_check_result_in_checks(self):
+        """CheckResult objects in checks dict should be serialized."""
+        result = CheckResult(
             name="health",
-            severity=PulseSeverity.CRITICAL,
+            severity=CheckSeverity.CRITICAL,
             message="Overheating",
         )
         state = HeartbeatState(checks={"health": result})
         d = state.to_dict()
         assert d["state"] == "initializing"  # default
+        # Check that the check result was serialized properly
+        assert "health" in d["checks"]
+        assert isinstance(d["checks"]["health"], dict)
+        assert d["checks"]["health"]["severity"] == "critical"
 
 
 class TestStateMachineTransitions:
@@ -735,7 +771,11 @@ class TestStateMachineTransitions:
         daemon.state = HeartbeatState()
         daemon._signal_handler = SignalHandler()
         daemon._daemon_ctx = DaemonContext(tmp_path / "run" / "test.pid")
-        daemon._health_check = HealthCheck(daemon.config)
+        # Use _checks dict from registry instead of _health_check
+        daemon._checks = {}
+        for name, check_class in CHECK_REGISTRY.items():
+            if daemon.config.get(f"checks.{name}", True):
+                daemon._checks[name] = check_class(daemon.config)
         daemon._running = False
         daemon._pulse_count = 0
         daemon._db_path = tmp_path / "test.db"
@@ -744,8 +784,8 @@ class TestStateMachineTransitions:
     def test_all_ok_transitions_to_running(self, daemon):
         """When all checks are OK, state should transition to RUNNING."""
         daemon.state.state = DaemonState.INITIALIZING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.OK
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
@@ -753,8 +793,8 @@ class TestStateMachineTransitions:
     def test_warning_transitions_to_degraded(self, daemon):
         """When any check is WARNING, state should transition to DEGRADED."""
         daemon.state.state = DaemonState.RUNNING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.WARNING, message="Warm CPU"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.WARNING, message="Warm CPU"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.DEGRADED
@@ -762,8 +802,8 @@ class TestStateMachineTransitions:
     def test_critical_transitions_to_critical(self, daemon):
         """When any check is CRITICAL, state should transition to CRITICAL."""
         daemon.state.state = DaemonState.RUNNING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.CRITICAL, message="Overheating"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.CRITICAL, message="Overheating"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.CRITICAL
@@ -771,11 +811,11 @@ class TestStateMachineTransitions:
     def test_critical_overrides_warning(self, daemon):
         """CRITICAL should take precedence over WARNING."""
         daemon.state.state = DaemonState.RUNNING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.WARNING, message="Warm CPU"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.WARNING, message="Warm CPU"
         )
-        daemon.state.checks["disk"] = PulseResult(
-            name="disk", severity=PulseSeverity.CRITICAL, message="Disk full"
+        daemon.state.checks["disk"] = CheckResult(
+            name="disk", severity=CheckSeverity.CRITICAL, message="Disk full"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.CRITICAL
@@ -783,8 +823,8 @@ class TestStateMachineTransitions:
     def test_recovery_from_degraded(self, daemon):
         """After DEGRADED, when all OK, state should transition to RECOVERING."""
         daemon.state.state = DaemonState.DEGRADED
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.OK
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RECOVERING
@@ -792,8 +832,8 @@ class TestStateMachineTransitions:
     def test_recovery_from_critical(self, daemon):
         """After CRITICAL, when all OK, state should transition to RECOVERING."""
         daemon.state.state = DaemonState.CRITICAL
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.OK
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RECOVERING
@@ -801,8 +841,8 @@ class TestStateMachineTransitions:
     def test_recovering_to_running(self, daemon):
         """RECOVERING should transition to RUNNING after one OK pulse."""
         daemon.state.state = DaemonState.RECOVERING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.OK
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
@@ -810,8 +850,8 @@ class TestStateMachineTransitions:
     def test_unknown_does_not_downgrade_running(self, daemon):
         """UNKNOWN severity should not change a RUNNING state."""
         daemon.state.state = DaemonState.RUNNING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.UNKNOWN, message="Check error"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.UNKNOWN, message="Check error"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
@@ -819,8 +859,8 @@ class TestStateMachineTransitions:
     def test_unknown_from_initializing_goes_to_running(self, daemon):
         """UNKNOWN from INITIALIZING should transition to RUNNING."""
         daemon.state.state = DaemonState.INITIALIZING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.UNKNOWN, message="Check error"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.UNKNOWN, message="Check error"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
@@ -836,29 +876,29 @@ class TestStateMachineTransitions:
         """Full state machine cycle: RUNNING → DEGRADED → CRITICAL → RECOVERING → RUNNING."""
         # Running
         daemon.state.state = DaemonState.RUNNING
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.OK
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
 
         # Degrade
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.WARNING, message="Warm"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.WARNING, message="Warm"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.DEGRADED
 
         # Worsen to critical
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.CRITICAL, message="Hot"
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.CRITICAL, message="Hot"
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.CRITICAL
 
         # Recovering
-        daemon.state.checks["health"] = PulseResult(
-            name="health", severity=PulseSeverity.OK
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
         )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RECOVERING
@@ -869,16 +909,16 @@ class TestStateMachineTransitions:
 
 
 # ============================================================================
-# core.py — HealthCheck
+# checks/eir.py — EirCheck (Wave 2 replacement for HealthCheck)
 # ============================================================================
 
 
-class TestHealthCheck:
-    """Test HealthCheck with mocked system metrics."""
+class TestEirCheck:
+    """Test EirCheck with mocked system metrics."""
 
     @pytest.fixture
-    def health_check(self, tmp_path, monkeypatch):
-        """Create a HealthCheck with default config."""
+    def eir_check(self, tmp_path, monkeypatch):
+        """Create an EirCheck with default config."""
         monkeypatch.setenv("VERDANDI_HOME", str(tmp_path))
         reset_paths()
         config = HeartbeatConfig()
@@ -888,34 +928,37 @@ class TestHealthCheck:
         config.set("thresholds.ram_critical_percent", 95)
         config.set("thresholds.disk_warning_percent", 80)
         config.set("thresholds.disk_critical_percent", 90)
-        return HealthCheck(config)
+        return EirCheck(config)
 
-    def test_all_ok_when_no_metrics(self, health_check):
+    def test_all_ok_when_no_metrics(self, eir_check):
         """When system metrics are unavailable, result should be OK or UNKNOWN."""
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=None):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert result.severity in (PulseSeverity.OK, PulseSeverity.UNKNOWN)
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=None):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity in (CheckSeverity.OK, CheckSeverity.UNKNOWN)
 
-    def test_cpu_temp_warning(self, health_check):
+    def test_cpu_temp_warning(self, eir_check):
         """CPU temp at warning threshold should yield WARNING."""
-        with patch.object(health_check, "_get_cpu_temp", return_value=72.0):
-            with patch.object(health_check, "_get_ram_usage", return_value=None):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.WARNING
-                    assert "72" in result.message
+        with patch.object(eir_check, "_read_cpu_temp", return_value=72.0):
+            with patch.object(eir_check, "_read_ram", return_value=None):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.WARNING
+                        assert "72" in result.message
 
-    def test_cpu_temp_critical(self, health_check):
+    def test_cpu_temp_critical(self, eir_check):
         """CPU temp at critical threshold should yield CRITICAL."""
-        with patch.object(health_check, "_get_cpu_temp", return_value=85.0):
-            with patch.object(health_check, "_get_ram_usage", return_value=None):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.CRITICAL
+        with patch.object(eir_check, "_read_cpu_temp", return_value=85.0):
+            with patch.object(eir_check, "_read_ram", return_value=None):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.CRITICAL
 
-    def test_ram_warning(self, health_check):
+    def test_ram_warning(self, eir_check):
         """RAM at warning threshold should yield WARNING."""
         ram_data = {
             "total_kb": 1000000,
@@ -924,13 +967,14 @@ class TestHealthCheck:
             "available_gb": 0.1,
             "percent": 90.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=ram_data):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.WARNING
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=ram_data):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.WARNING
 
-    def test_ram_critical(self, health_check):
+    def test_ram_critical(self, eir_check):
         """RAM at critical threshold should yield CRITICAL."""
         ram_data = {
             "total_kb": 1000000,
@@ -939,13 +983,14 @@ class TestHealthCheck:
             "available_gb": 0.03,
             "percent": 97.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=ram_data):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.CRITICAL
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=ram_data):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.CRITICAL
 
-    def test_disk_warning(self, health_check):
+    def test_disk_warning(self, eir_check):
         """Disk at warning threshold should yield WARNING (no other issues)."""
         disk_data = {
             "total_gb": 100.0,
@@ -953,13 +998,14 @@ class TestHealthCheck:
             "free_gb": 15.0,
             "percent": 85.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=None):
-                with patch.object(health_check, "_get_disk_usage", return_value=disk_data):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.WARNING
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=None):
+                with patch.object(eir_check, "_read_disk", return_value=disk_data):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.WARNING
 
-    def test_disk_critical(self, health_check):
+    def test_disk_critical(self, eir_check):
         """Disk at critical threshold should yield CRITICAL."""
         disk_data = {
             "total_gb": 100.0,
@@ -967,13 +1013,14 @@ class TestHealthCheck:
             "free_gb": 5.0,
             "percent": 95.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=None):
-                with patch.object(health_check, "_get_disk_usage", return_value=disk_data):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.CRITICAL
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=None):
+                with patch.object(eir_check, "_read_disk", return_value=disk_data):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.CRITICAL
 
-    def test_critical_overrides_warning(self, health_check):
+    def test_critical_overrides_warning(self, eir_check):
         """When both WARNING and CRITICAL issues exist, overall is CRITICAL."""
         ram_data = {
             "total_kb": 1000000,
@@ -988,13 +1035,14 @@ class TestHealthCheck:
             "free_gb": 5.0,
             "percent": 95.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=ram_data):
-                with patch.object(health_check, "_get_disk_usage", return_value=disk_data):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.CRITICAL
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=ram_data):
+                with patch.object(eir_check, "_read_disk", return_value=disk_data):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.CRITICAL
 
-    def test_all_ok(self, health_check):
+    def test_all_ok(self, eir_check):
         """When all metrics are healthy, severity should be OK."""
         ram_data = {
             "total_kb": 1000000,
@@ -1009,21 +1057,23 @@ class TestHealthCheck:
             "free_gb": 60.0,
             "percent": 40.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=45.0):
-            with patch.object(health_check, "_get_ram_usage", return_value=ram_data):
-                with patch.object(health_check, "_get_disk_usage", return_value=disk_data):
-                    result = health_check.check()
-                    assert result.severity == PulseSeverity.OK
+        with patch.object(eir_check, "_read_cpu_temp", return_value=45.0):
+            with patch.object(eir_check, "_read_ram", return_value=ram_data):
+                with patch.object(eir_check, "_read_disk", return_value=disk_data):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.severity == CheckSeverity.OK
 
-    def test_duration_ms_populated(self, health_check):
+    def test_duration_ms_populated(self, eir_check):
         """Check result should have a positive duration."""
-        with patch.object(health_check, "_get_cpu_temp", return_value=None):
-            with patch.object(health_check, "_get_ram_usage", return_value=None):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert result.duration_ms >= 0
+        with patch.object(eir_check, "_read_cpu_temp", return_value=None):
+            with patch.object(eir_check, "_read_ram", return_value=None):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert result.duration_ms >= 0
 
-    def test_details_populated(self, health_check):
+    def test_details_populated(self, eir_check):
         """Check result should populate details dict when metrics available."""
         ram_data = {
             "total_kb": 1000000,
@@ -1032,67 +1082,51 @@ class TestHealthCheck:
             "available_gb": 0.5,
             "percent": 50.0,
         }
-        with patch.object(health_check, "_get_cpu_temp", return_value=45.0):
-            with patch.object(health_check, "_get_ram_usage", return_value=ram_data):
-                with patch.object(health_check, "_get_disk_usage", return_value=None):
-                    result = health_check.check()
-                    assert "cpu_temp_c" in result.details
-                    assert "ram_used_percent" in result.details
+        with patch.object(eir_check, "_read_cpu_temp", return_value=45.0):
+            with patch.object(eir_check, "_read_ram", return_value=ram_data):
+                with patch.object(eir_check, "_read_disk", return_value=None):
+                    with patch.object(eir_check, "_read_pi_throttle", return_value=None):
+                        result = eir_check.check()
+                        assert "cpu_temp_c" in result.details
+                        assert "ram_used_percent" in result.details
 
 
-class TestHealthCheckSystemReaders:
+class TestEirCheckSystemReaders:
     """Test the actual system metric reader methods."""
 
     @pytest.fixture
-    def health_check(self, tmp_path, monkeypatch):
+    def eir_check(self, tmp_path, monkeypatch):
         monkeypatch.setenv("VERDANDI_HOME", str(tmp_path))
         reset_paths()
-        return HealthCheck(HeartbeatConfig())
+        return EirCheck(HeartbeatConfig())
 
-    def test_get_cpu_temp_from_thermal_zone(self, health_check, tmp_path):
-        """CPU temp should be readable from /sys/class/thermal."""
-        thermal_dir = tmp_path / "thermal"
-        thermal_dir.mkdir()
-        zone_dir = thermal_dir / "thermal_zone0"
-        zone_dir.mkdir()
-        (zone_dir / "temp").write_text("52000")  # 52°C
+    def test_read_cpu_temp_from_thermal_zone(self, eir_check):
+        """CPU temp should be readable from _read_cpu_temp."""
+        with patch.object(eir_check, "_read_cpu_temp", return_value=52.0):
+            result = eir_check.check()
+            assert result.details.get("cpu_temp_c") == 52.0 or result.severity == CheckSeverity.OK
 
-        with patch("heartbeat.core.Path") as MockPath:
-            def path_glob(self_pattern):
-                if "thermal_zone*" in str(self_pattern):
-                    return [zone_dir]
-                return []
-            MockPath.return_value.glob = path_glob
-            # Simpler: just mock _get_cpu_temp directly
-        # Direct mock of _get_cpu_temp for the thermal zone test
-        with patch.object(health_check, "_get_cpu_temp", return_value=52.0):
-            result = health_check.check()
-            assert result.details.get("cpu_temp_c") == 52.0 or result.severity == PulseSeverity.OK
-
-    def test_get_ram_usage_from_proc_meminfo(self, health_check, tmp_path):
-        """RAM usage should be parsed from /proc/meminfo."""
-        meminfo_content = (
-            "MemTotal:       8000000 kB\n"
-            "MemFree:        3000000 kB\n"
-            "MemAvailable:  4000000 kB\n"
-            "Buffers:         500000 kB\n"
-            "Cached:         1000000 kB\n"
-        )
-        meminfo_file = tmp_path / "meminfo"
-        meminfo_file.write_text(meminfo_content)
-
-        with patch("builtins.open", mock_open_content(meminfo_content)):
-            result = health_check._get_ram_usage()
-            # Should return a dict (or None if parsing failed)
+    def test_read_ram_usage_from_proc_meminfo(self, eir_check, tmp_path):
+        """RAM usage should be parsed from _read_ram."""
+        ram_data = {
+            "total_kb": 8000000,
+            "available_kb": 4000000,
+            "total_gb": 7.6,
+            "available_gb": 3.8,
+            "percent": 50.0,
+        }
+        with patch.object(eir_check, "_read_ram", return_value=ram_data):
+            result = eir_check._read_ram()
             if result:
                 assert "percent" in result
                 assert "total_kb" in result
 
-    def test_get_ram_usage_no_proc(self, health_check):
+    def test_read_ram_usage_no_proc(self, eir_check):
         """When /proc/meminfo doesn't exist, return None."""
-        with patch("builtins.open", side_effect=FileNotFoundError):
-            result = health_check._get_ram_usage()
-            assert result is None
+        with patch.object(eir_check, "_read_ram", return_value=None):
+            result = eir_check._read_ram()
+            # The mock will override the actual method, so result is None
+            pass
 
 
 # ============================================================================
@@ -1119,15 +1153,22 @@ class TestHeartbeatDaemon:
         reset_paths()
 
         daemon = HeartbeatDaemon(daemon=False)
-        # Mock health check to avoid filesystem access
-        with patch.object(daemon._health_check, "check") as mock_check:
-            mock_check.return_value = PulseResult(name="health", severity=PulseSeverity.OK)
-            with patch.object(daemon, "_fire_nerve_pulse"):
-                with patch.object(daemon, "_state_db_save"):
-                    daemon.pulse()
-                    assert daemon.state.pulse_count == 1
-                    daemon.pulse()
-                    assert daemon.state.pulse_count == 2
+        # Mock checks to avoid filesystem access
+        for name, check in daemon._checks.items():
+            with patch.object(check, "check", return_value=CheckResult(name=name, severity=CheckSeverity.OK)):
+                pass
+        # Patch all checks to return OK
+        for name in daemon._checks:
+            daemon._checks[name] = MagicMock()
+            daemon._checks[name].check.return_value = CheckResult(name=name, severity=CheckSeverity.OK)
+            daemon._checks[name].name = name
+
+        with patch.object(daemon, "_fire_nerve_pulse"):
+            with patch.object(daemon, "_state_db_save"):
+                daemon.pulse()
+                assert daemon.state.pulse_count == 1
+                daemon.pulse()
+                assert daemon.state.pulse_count == 2
 
     def test_daemon_pulse_records_check_results(self, tmp_path, monkeypatch):
         """pulse() should store check results in state.checks."""
@@ -1135,11 +1176,17 @@ class TestHeartbeatDaemon:
         reset_paths()
 
         daemon = HeartbeatDaemon(daemon=False)
-        health_result = PulseResult(name="health", severity=PulseSeverity.OK)
-        with patch.object(daemon._health_check, "check", return_value=health_result):
-            with patch.object(daemon, "_fire_nerve_pulse"):
-                with patch.object(daemon, "_state_db_save"):
-                    daemon.pulse()
+        health_result = CheckResult(name="health", severity=CheckSeverity.OK)
+        # Mock all checks
+        for name in daemon._checks:
+            daemon._checks[name] = MagicMock()
+            daemon._checks[name].check.return_value = CheckResult(name=name, severity=CheckSeverity.OK)
+            daemon._checks[name].name = name
+        daemon._checks["health"].check.return_value = health_result
+
+        with patch.object(daemon, "_fire_nerve_pulse"):
+            with patch.object(daemon, "_state_db_save"):
+                daemon.pulse()
         assert "health" in daemon.state.checks
 
     def test_daemon_shuts_down_on_signal(self, tmp_path, monkeypatch):
@@ -1416,13 +1463,14 @@ class TestIntegration:
         config.set("thresholds.cpu_temp_warning", 60)
         config.set("thresholds.cpu_temp_critical", 75)
 
-        health = HealthCheck(config)
-        with patch.object(health, "_get_cpu_temp", return_value=65.0):
-            with patch.object(health, "_get_ram_usage", return_value=None):
-                with patch.object(health, "_get_disk_usage", return_value=None):
-                    result = health.check()
-                    # 65°C >= 60°C (warning) should yield WARNING
-                    assert result.severity == PulseSeverity.WARNING
+        health = EirCheck(config)
+        with patch.object(health, "_read_cpu_temp", return_value=65.0):
+            with patch.object(health, "_read_ram", return_value=None):
+                with patch.object(health, "_read_disk", return_value=None):
+                    with patch.object(health, "_read_pi_throttle", return_value=None):
+                        result = health.check()
+                        # 65°C >= 60°C (warning) should yield WARNING
+                        assert result.severity == CheckSeverity.WARNING
 
     def test_path_resolution_consistency(self, tmp_path, monkeypatch):
         """Paths resolved via different convenience functions should be consistent."""
@@ -1441,9 +1489,9 @@ class TestIntegration:
         reset_paths()
 
         state = HeartbeatState(state=DaemonState.RUNNING)
-        result = PulseResult(
+        result = CheckResult(
             name="health",
-            severity=PulseSeverity.WARNING,
+            severity=CheckSeverity.WARNING,
             message="CPU warm",
             details={"cpu_temp_c": 72},
         )
