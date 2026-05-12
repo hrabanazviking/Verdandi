@@ -1709,7 +1709,7 @@ prometheus:
 - Roadmap (Skuld v0.3.0, Valhalla v0.4.0), Heimdall watchman
 - v0.2.0 full changelog
 
-**489 tests passing** (264 core + 149 checks + 75 actions + 49 integration)
+**558 tests passing** (264 core + 149 checks + 75 actions + 49 integration + 21 eir)
 
 ### v0.2.0 — Hjartsláttur (2026-05-11)
 
@@ -1720,7 +1720,7 @@ prometheus:
 - ✅ **Wave 3 — The Voice**: Four pluggable action modules (Mjölnir, Gungnir, Bifrǫst, Eir) with BaseAction, ACTION_REGISTRY, and Reactor bridge
 - ✅ **Reactor**: Configurable rules mapping check severity → actions, cooldown timers, dry-run mode, audit logging
 - ✅ **CLI `react` command**: Evaluate and optionally execute reactions from the command line
-- ✅ **489 tests passing** (264 heartbeat core + 149 checks + 75 actions/reactor + 49 integration)
+- ✅ **558 tests passing** (264 heartbeat core + 149 checks + 75 actions/reactor + 49 integration + 21 eir)
 - ✅ **Cross-platform path resolution**: Linux, macOS, WSL, iOS, Raspberry Pi detection
 - ✅ **Self-healing**: Component failures degrade gracefully — bad checks return UNKNOWN, bad actions return FAILED
 
