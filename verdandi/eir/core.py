@@ -347,12 +347,17 @@ class EirPipeline:
         she ensures nothing of value is lost to corruption or time.
         
         BUG FIX: Now correctly backs up .db files, not .py source files.
+        DEDUP FIX: Skips runa_memory.db if it's the same file as mimir_db
+        (they share the same path), avoiding 542MB wasted per backup cycle.
         """
         results = {"backups": [], "errors": []}
 
         backup_dir = Path(self.config.backup_dir)
         backup_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Track which real paths we've already backed up (avoid duplicating the same file)
+        backed_up_real_paths = set()
 
         # Backup Mímir — the actual database, not the source module
         mimir_path = Path(self.config.mimir_db_path).expanduser()
@@ -361,10 +366,11 @@ class EirPipeline:
                 dest = backup_dir / f"mimir_{timestamp}.db"
                 shutil.copy2(mimir_path, dest)
                 results["backups"].append(str(dest))
+                backed_up_real_paths.add(mimir_path.resolve())
             except Exception as e:
                 results["errors"].append(f"Mímir backup: {e}")
         elif not mimir_path.exists():
-            pass  # Skip silently —没什么可备份的
+            pass  # Skip silently
         else:
             results["errors"].append(
                 f"Mímir path is not a database: {mimir_path} (suffix={mimir_path.suffix})"
@@ -377,12 +383,14 @@ class EirPipeline:
                 dest = backup_dir / f"muninn_{timestamp}.db"
                 shutil.copy2(muninn_path, dest)
                 results["backups"].append(str(dest))
+                backed_up_real_paths.add(muninn_path.resolve())
             except Exception as e:
                 results["errors"].append(f"Muninn backup: {e}")
 
-        # Backup Runa Memory (the actual live DB)
+        # Backup Runa Memory — ONLY if it's a DIFFERENT file from Mímir
+        # (they often share the same path, causing a 542MB duplicate backup)
         runa_memory_path = Path.home() / ".hermes" / "memory" / "runa_memory.db"
-        if runa_memory_path.exists():
+        if runa_memory_path.exists() and runa_memory_path.resolve() not in backed_up_real_paths:
             try:
                 dest = backup_dir / f"runa_memory_{timestamp}.db"
                 shutil.copy2(runa_memory_path, dest)
