@@ -40,4 +40,5 @@ requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
+packages = ["verdandi", "verdandi.eir"]
 py-modules = ["nervous_system", "conversation_logger", "context_injector", "reactor"]
