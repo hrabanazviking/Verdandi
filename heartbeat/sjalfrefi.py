@@ -495,6 +495,19 @@ def full_enforcement_cycle(dry_run: bool = False) -> list[str]:
     if dry_run:
         all_actions.append("[DRY-RUN] Would enforce all laws")
     else:
+        # LAW 0: Invoke Heimdall FIRST — commit+push before anything else
+        all_actions.append("─ LAW 0: Heimdall Auto-Commit-Push ─")
+        try:
+            result = subprocess.run(
+                [sys.executable, str(HERMES_DIR / "hooks" / "heimdall-commit" / "handler.py")],
+                capture_output=True, text=True, timeout=120,
+                env={**os.environ, "HOME": str(HOME)},
+            )
+            for line in result.stdout.strip().split("\n"):
+                if line.strip():
+                    all_actions.append(f"  HEIMDALL: {line}")
+        except Exception as e:
+            all_actions.append(f"  HEIMDALL-ERROR: {e}")
         # LAW 1: Fix bugs immediately
         all_actions.append("─ LAW 1: Fix Bugs Immediately ─")
         actions = check_bug_flags()
