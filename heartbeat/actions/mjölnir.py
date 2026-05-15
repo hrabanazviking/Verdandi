@@ -55,6 +55,9 @@ class MjölnirAction(BaseAction):
     # Repos to always auto-push (even in dry-run)
     ALLOWLIST: list[str] = []
 
+    # Repos to never auto-push (safety block list)
+    BLOCKLIST: list[str] = []
+
     def _execute(self, ctx: ActionContext) -> ActionResult:
         """Auto-push repos flagged by the projects check."""
         details = ctx.trigger_details

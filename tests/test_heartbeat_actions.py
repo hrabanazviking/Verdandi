@@ -257,7 +257,7 @@ class TestMjölnirAction:
         assert action.name == "auto_push"
         assert action.trigger_checks == ["projects"]
         assert action.trigger_severity == CheckSeverity.WARNING
-        assert action.cooldown_seconds == 3600
+        assert action.cooldown_seconds == 600  # Intentionally reduced from 3600 per Heimdall lesson
 
     def test_dry_run(self):
         action = MjölnirAction()
@@ -695,15 +695,19 @@ class TestReactor:
     """Test Reactor class."""
 
     def test_initialization(self):
-        reactor = Reactor(dry_run=True)
-        assert reactor.dry_run is True
-        assert len(reactor.rules) > 0
-        assert len(reactor.actions) > 0
+        # dry_run=True is explicitly passed, so it should be respected
+        reactor_dry = Reactor(dry_run=True)
+        assert reactor_dry.dry_run is True
+        # Default constructor now has dry_run=False (HEIMDALL LESSON)
+        reactor_default = Reactor()
+        assert reactor_default.dry_run is False  # HEIMDALL LESSON: default is False
+        assert len(reactor_default.rules) > 0
+        assert len(reactor_default.actions) > 0
 
     def test_default_rules(self):
         reactor = Reactor()
         # Should have 5 default rules
-        assert len(reactor.rules) == 6  # v0.3.0: added prediction → preemptive_heal
+        assert len(reactor.rules) == 7  # v0.4.1: added heimdall enforcement action
         rule_names = [(r.check_name, r.action_name) for r in reactor.rules]
         assert ("projects", "auto_push") in rule_names
         assert ("schedule", "auto_restart") in rule_names
@@ -836,4 +840,4 @@ class TestCoreReactorIntegration:
     def test_reactor_dry_run_default(self):
         from heartbeat.core import HeartbeatDaemon
         daemon = HeartbeatDaemon(daemon=False)
-        assert daemon._reactor.dry_run is True  # Default is dry-run for safety
+        assert daemon._reactor.dry_run is False  # HEIMDALL LESSON: dry_run=False by default — enforce, don't just detect

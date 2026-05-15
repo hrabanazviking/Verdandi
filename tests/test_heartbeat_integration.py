@@ -75,7 +75,7 @@ class TestFullSystemInit:
     def test_daemon_initializes_reactor(self):
         daemon = HeartbeatDaemon(daemon=False)
         assert isinstance(daemon._reactor, Reactor)
-        assert daemon._reactor.dry_run is True
+        assert daemon._reactor.dry_run is False  # HEIMDALL LESSON: dry_run=False — enforce, don't just detect
 
     def test_config_loads_successfully(self):
         config = HeartbeatConfig()
