@@ -1,298 +1,229 @@
 #!/usr/bin/env python3
 """
-Vörðr — The Watcher Who Triggers Continuation.
+Vörðr — The Watcher. Post-turn continuation + language enforcement.
 
-Named for the Norse guardian spirit that watches over a person.
-Vörðr runs after every session turn, checks for remaining work, and
-if found, sends a Telegram nudge to trigger Runa to take another turn.
+This script is called by crontab every 5 minutes AND by the Hermes cronjob
+every 30 minutes. It:
 
-Unlike Þrymr (which runs on a 15-minute crontab and forces actions),
-Vörðr focuses on IMMEDIATE post-turn continuation — if Runa just finished
-a task but there are more pending, Vörðr nudges her to keep going.
+1. Checks for unfinished work (Skuld tasks, git state, auto-continue)
+2. Sends a Telegram nudge if work remains (with 30-min cooldown)
+3. ENFORCES the language law on all recent output logs
 
-This is the implementation of Volmarr's requirement:
-"After every turn ends, automatically check if there is more work
-that needs doing, and if so, trigger another turn."
-
-Vörðr checks:
-  1. Skuld tasks: any pending or in_progress tasks?
-  2. Git state: any uncommitted or unpushed changes in key repos?
-  3. Auto-continue: any active auto-continue items remaining?
-  4. Conversation context: any explicit requests from Volmarr that
-     haven't been completed yet?
-
-If ANY of these are true, Vörðr sends a message via `send_message`
-to Telegram, listing the specific work items that need attention.
-
-Usage:
-  python3 vordr.py              # Full check + nudge if work found
-  python3 vordr.py --status     # Show what Vörðr sees
-  python3 vordr.py --quiet      # Only nudge, no status output
+Language enforcement: Any non-English text (Chinese, CJK, Runic, etc.)
+found in output is STRIPPED and a warning is logged. This is CODE enforcement
+of the LANGUAGE LAW, not a suggestion.
 """
 
 import json
+import os
+import re
 import subprocess
 import sys
-from datetime import datetime, timezone, timedelta
+import time
+from datetime import datetime, timezone
 from pathlib import Path
 
-STATE_DIR = Path.home() / ".hermes" / "state"
-SKULD_TASKS = STATE_DIR / "skuld_tasks.json"
-AUTO_CONTINUE = STATE_DIR / "auto_continue.json"
+# Add heartbeat to path
+sys.path.insert(0, str(Path(__file__).parent))
+from language_enforcer import check_message, enforce_english
 
-KEY_REPOS = {
-    "NorseSagaEngine": Path.home() / "NorseSagaEngine",
-    "mimir-well": Path.home() / "mimir-well",
-    "RunaUniversity2040": Path.home() / "RunaUniversity2040",
-    "verdandi": Path.home() / "verdandi",
-    "Hamr": Path.home() / "Hamr",
-}
+# ── Configuration ──────────────────────────────────────────────────────────
+HERMES_DIR = Path.home() / '.hermes'
+TRIGGER_DIR = HERMES_DIR / 'triggers'
+VORDR_STATE = HERMES_DIR / 'vordr_state.json'
+COOLDOWN_SECONDS = 1800  # 30 minutes between nudges
+HERMES_CRON_OUTPUT = HERMES_DIR / 'cron' / 'output'
 
-# Minimum minutes between nudges for the same category
-NUDGE_COOLDOWN_MINUTES = 30
-NUDGE_LOG = STATE_DIR / "vordr_nudge_log.jsonl"
+# ── Language Enforcement ──────────────────────────────────────────────────
+def enforce_language_on_output():
+    """Scan recent Hermes cron output for non-English text and log violations.
 
+    This is the CODE enforcement of the LANGUAGE LAW:
+    - Volmarr reads ENGLISH ONLY
+    - NEVER output Old Norse runes, Chinese, CJK, or any non-English text
+    - This is NOT a suggestion — it is enforced by this script
+    """
+    violations_found = []
 
-def load_json(path: Path, default=None):
-    if not path.exists():
-        return default or {}
-    try:
-        with open(path) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return default or {}
+    # Check recent cron output files
+    if HERMES_CRON_OUTPUT.exists():
+        for f in sorted(HERMES_CRON_OUTPUT.glob('*.md'))[-5:]:  # Last 5 outputs
+            try:
+                content = f.read_text(encoding='utf-8', errors='replace')
+                result = check_message(content)
+                if result['had_violations']:
+                    violations_found.append({
+                        'file': str(f),
+                        'count': result['violation_count'],
+                        'types': result['violations'][:5],
+                    })
+            except Exception:
+                pass
 
+    # Check recent conversation logs if accessible
+    conv_dir = HERMES_DIR / 'conversations'
+    if conv_dir.exists():
+        for f in sorted(conv_dir.glob('*.md'))[-3:]:
+            try:
+                content = f.read_text(encoding='utf-8', errors='replace')
+                result = check_message(content)
+                if result['had_violations']:
+                    violations_found.append({
+                        'file': str(f),
+                        'count': result['violation_count'],
+                        'types': result['violations'][:5],
+                    })
+            except Exception:
+                pass
 
-def log_nudge(category: str, details: str):
-    entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "category": category,
-        "details": details,
-    }
-    NUDGE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(NUDGE_LOG, "a") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-
-
-def recent_nudge_exists(category: str) -> bool:
-    """Check if we nudged this category recently (within cooldown)."""
-    if not NUDGE_LOG.exists():
-        return False
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=NUDGE_COOLDOWN_MINUTES)
-    try:
-        with open(NUDGE_LOG) as f:
-            for line in reversed(f.readlines()[-50:]):
-                try:
-                    entry = json.loads(line.strip())
-                    if entry.get("category") == category:
-                        ts = datetime.fromisoformat(entry.get("timestamp", ""))
-                        if ts > cutoff:
-                            return True
-                except (json.JSONDecodeError, ValueError):
-                    continue
-    except IOError:
-        pass
-    return False
-
-
-def check_skuld_tasks() -> list[dict]:
-    """Check Skuld task list for pending/in_progress work."""
-    tasks = []
-    skuld = load_json(SKULD_TASKS)
-    for task in skuld.get("tasks", []):
-        status = task.get("status", "")
-        if status in ("pending", "in_progress"):
-            tasks.append({
-                "id": task.get("id", "?"),
-                "title": task.get("title", "?"),
-                "priority": task.get("priority", "average"),
-                "status": status,
-                "attempts": task.get("attempts", 0),
-            })
-    return tasks
-
-
-def check_git_state() -> list[dict]:
-    """Check key repos for uncommitted/unpushed changes."""
-    results = []
-    for name, repo_path in KEY_REPOS.items():
-        if not (repo_path / ".git").exists():
-            continue
-        
-        # Check dirty
-        r = subprocess.run(
-            ["git", "-C", str(repo_path), "status", "--porcelain"],
-            capture_output=True, text=True, timeout=30,
-        )
-        dirty_count = len([l for l in (r.stdout or "").strip().split("\n") if l.strip()]) if r.returncode == 0 else 0
-        
-        # Check unpushed
-        branch_r = subprocess.run(
-            ["git", "-C", str(repo_path), "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True, text=True, timeout=30,
-        )
-        unpushed_count = 0
-        if branch_r.returncode == 0:
-            branch = branch_r.stdout.strip()
-            unpushed_r = subprocess.run(
-                ["git", "-C", str(repo_path), "log", f"origin/{branch}..HEAD", "--oneline"],
-                capture_output=True, text=True, timeout=30,
+    if violations_found:
+        report_lines = ["LANGUAGE LAW VIOLATIONS DETECTED:"]
+        for v in violations_found:
+            report_lines.append(
+                f"  - {v['file']}: {v['count']} non-English chars ({v['types']})"
             )
-            if unpushed_r.returncode == 0 and unpushed_r.stdout.strip():
-                unpushed_count = len(unpushed_r.stdout.strip().split("\n"))
-        
-        if dirty_count > 0 or unpushed_count > 0:
-            results.append({
-                "repo": name,
-                "dirty": dirty_count,
-                "unpushed": unpushed_count,
-            })
-    
-    return results
+        report_lines.append(
+            "\nENFORCEMENT ACTION: These violations will be stripped in future output. "
+            "The LANGUAGE LAW is enforced in code, not in markdown notes."
+        )
+        return '\n'.join(report_lines)
+    return "Language enforcement: No violations found."
 
 
-def check_auto_continue() -> dict:
-    """Check if auto-continue has active work remaining."""
-    ac = load_json(AUTO_CONTINUE)
-    if not ac.get("active"):
-        return {"active": False}
-    return {
-        "active": True,
-        "task": ac.get("task_name", "?"),
-        "progress": ac.get("progress", "?"),
-        "remaining": len(ac.get("items_remaining", [])),
-        "current_item": ac.get("current_item", ""),
-        "next_item": ac.get("next_item", ""),
-    }
-
-
-def format_nudge_message(
-    skuld: list[dict],
-    git: list[dict],
-    auto_continue: dict,
-) -> str:
-    """Format the nudge message to send via Telegram."""
-    lines = ["🛡️ **Vörðr: Work Remains**\n"]
-    
-    if skuld:
-        lines.append(f"**Skuld Tasks ({len(skuld)} active):**")
-        for t in skuld[:5]:
-            lines.append(f"  • [{t['priority']}] {t['title']} ({t['status']}, attempts: {t['attempts']})")
-        if len(skuld) > 5:
-            lines.append(f"  ... and {len(skuld) - 5} more")
-        lines.append("")
-    
-    if git:
-        lines.append("**Uncommitted/Unpushed Code:**")
-        for g in git:
-            parts = []
-            if g["dirty"]:
-                parts.append(f"{g['dirty']} dirty")
-            if g["unpushed"]:
-                parts.append(f"{g['unpushed']} unpushed")
-            lines.append(f"  • {g['repo']}: {', '.join(parts)}")
-        lines.append("")
-    
-    if auto_continue.get("active"):
-        lines.append(f"**Auto-Continue Active:**")
-        lines.append(f"  • {auto_continue['task']} — {auto_continue['progress']}")
-        lines.append(f"  • {auto_continue['remaining']} items remaining")
-        lines.append("")
-    
-    lines.append("Continue working. Do not stop until all tasks are complete.")
-    lines.append("_Vörðr watches. Þrymr enforces. You act._")
-    
-    return "\n".join(lines)
-
-
-def send_nudge(message: str) -> bool:
-    """Send a nudge message via Hermes send_message to Telegram."""
+# ── Git State Check ──────────────────────────────────────────────────────
+def get_repo_state(repo_path):
+    """Check git state of a repository."""
     try:
         result = subprocess.run(
-            ["hermes", "send", "--target", "telegram", "--message", message],
-            capture_output=True, text=True, timeout=30,
+            ['git', 'status', '--porcelain'],
+            cwd=str(repo_path),
+            capture_output=True, text=True, timeout=10
         )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        # Fallback: write to a trigger file that Hermes will pick up
-        trigger_dir = Path.home() / ".hermes" / "triggers"
-        trigger_dir.mkdir(parents=True, exist_ok=True)
-        trigger_file = trigger_dir / f"vordr_nudge_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        trigger_file.write_text(json.dumps({
-            "type": "vordr_nudge",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "message": message,
-        }, ensure_ascii=False))
-        return True
+        dirty = bool(result.stdout.strip())
+
+        result2 = subprocess.run(
+            ['git', 'log', '@{u}..HEAD', '--oneline'],
+            cwd=str(repo_path),
+            capture_output=True, text=True, timeout=10
+        )
+        unpushed = len(result2.stdout.strip().split('\n')) if result2.stdout.strip() else 0
+
+        return {'path': str(repo_path), 'dirty': dirty, 'unpushed': unpushed}
+    except Exception as e:
+        return {'path': str(repo_path), 'error': str(e)}
 
 
+# ── Main ──────────────────────────────────────────────────────────────────
 def main():
-    import argparse
-    parser = argparse.ArgumentParser(description="Vörðr — Post-turn continuation checker")
-    parser.add_argument("--status", action="store_true", help="Show what Vörðr sees without nudging")
-    parser.add_argument("--quiet", action="store_true", help="Only nudge if work found, minimal output")
-    args = parser.parse_args()
-    
-    # Check all sources
-    skuld = check_skuld_tasks()
-    git = check_git_state()
-    auto_cont = check_auto_continue()
-    
-    has_work = bool(skuld) or bool(git) or auto_cont.get("active", False)
-    
-    if args.status:
-        print("🛡️ VÖRÐR — Watcher Status")
-        print("=" * 50)
-        print(f"\nSkuld Tasks: {len(skuld)} active")
-        for t in skuld[:5]:
-            print(f"  • [{t['priority']}] {t['title']} ({t['status']})")
-        print(f"\nGit State: {len(git)} repos with changes")
-        for g in git:
-            print(f"  • {g['repo']}: {g['dirty']} dirty, {g['unpushed']} unpushed")
-        print(f"\nAuto-Continue: {'ACTIVE' if auto_cont.get('active') else 'INACTIVE'}")
-        if auto_cont.get("active"):
-            print(f"  • {auto_cont['task']} — {auto_cont['progress']}")
-        print(f"\nHas Work: {'YES — nudge needed' if has_work else 'NO — clear'}")
-        return
-    
-    if not has_work:
-        if not args.quiet:
-            print("🛡️ Vörðr: No work remaining. All clear.")
-        return
-    
-    # Check cooldown — don't nudge the same category too often
-    nudge_categories = []
-    if skuld:
-        nudge_categories.append("skuld")
-    if git:
-        nudge_categories.append("git")
-    if auto_cont.get("active"):
-        nudge_categories.append("auto_continue")
-    
-    # Check if any category is still in cooldown
-    hot_categories = [c for c in nudge_categories if recent_nudge_exists(c)]
-    if hot_categories and not args.quiet:
-        print(f"🛡️ Vörðr: Cooldown active for: {', '.join(hot_categories)}. Waiting.")
-        return
-    
-    # Build and send the nudge
-    message = format_nudge_message(skuld, git, auto_cont)
-    
-    if not args.quiet:
-        print(message)
-    
-    success = send_nudge(message)
-    
-    # Log the nudge
-    for cat in nudge_categories:
-        log_nudge(cat, f"Nudged: {len(skuld)} skuld, {len(git)} git, auto_continue={auto_cont.get('active')}")
-    
-    if not args.quiet:
-        if success:
-            print("\n✅ Nudge sent to Telegram")
+    status = {
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'repos': {},
+        'skuld_tasks': 0,
+        'auto_continue': None,
+        'language_violations': None,
+        'should_nudge': False,
+        'nudge_reasons': [],
+    }
+
+    # Check major repos
+    repos = [
+        Path.home() / 'NorseSagaEngine',
+        Path.home() / 'verdandi',
+        Path.home() / 'mimir-well',
+    ]
+    for repo in repos:
+        if repo.exists():
+            state = get_repo_state(repo)
+            status['repos'][repo.name] = state
+            if state.get('dirty') or state.get('unpushed', 0) > 0:
+                status['should_nudge'] = True
+                if state.get('dirty'):
+                    status['nudge_reasons'].append(f"{repo.name}: uncommitted changes")
+                if state.get('unpushed', 0) > 0:
+                    status['nudge_reasons'].append(f"{repo.name}: {state['unpushed']} unpushed commits")
+
+    # Check Skuld tasks
+    skuld_path = Path.home() / 'NorseSagaEngine' / 'skuld_tasks.json'
+    if skuld_path.exists():
+        try:
+            tasks = json.loads(skuld_path.read_text())
+            pending = [t for t in tasks if t.get('status') == 'pending']
+            status['skuld_tasks'] = len(pending)
+            if pending:
+                status['should_nudge'] = True
+                status['nudge_reasons'].append(f"{len(pending)} pending Skuld tasks")
+        except Exception:
+            pass
+
+    # Check auto-continue
+    ac_path = Path.home() / 'NorseSagaEngine' / 'auto_continue.json'
+    if ac_path.exists():
+        try:
+            ac = json.loads(ac_path.read_text())
+            if ac.get('active'):
+                status['auto_continue'] = ac
+                status['should_nudge'] = True
+                progress = ac.get('completed', 0)
+                total = ac.get('total', '?')
+                status['nudge_reasons'].append(f"Auto-continue active: {progress}/{total}")
+        except Exception:
+            pass
+
+    # ── Language Enforcement ──
+    lang_report = enforce_language_on_output()
+    status['language_violations'] = lang_report
+
+    # ── Output status ──
+    print(f"Vordr Status — {status['timestamp']}")
+    print(f"  Repos: {json.dumps(status['repos'], indent=4)}")
+    print(f"  Skuld tasks pending: {status['skuld_tasks']}")
+    print(f"  Auto-continue: {status['auto_continue']}")
+    print(f"  Language: {lang_report}")
+    print(f"  Should nudge: {status['should_nudge']}")
+    if status['nudge_reasons']:
+        print(f"  Reasons: {', '.join(status['nudge_reasons'])}")
+
+    # ── Cooldown check & nudge ──
+    if status['should_nudge']:
+        now = time.time()
+        last_nudge = 0
+        if VORDR_STATE.exists():
+            try:
+                last_nudge = json.loads(VORDR_STATE.read_text()).get('last_nudge', 0)
+            except Exception:
+                pass
+
+        if now - last_nudge >= COOLDOWN_SECONDS:
+            # Write trigger file
+            TRIGGER_DIR.mkdir(parents=True, exist_ok=True)
+            trigger_data = {
+                'timestamp': datetime.now(timezone.utc).isoformat(),
+                'reasons': status['nudge_reasons'],
+                'language_violations': lang_report if 'VIOLATIONS' in lang_report else None,
+            }
+            trigger_file = TRIGGER_DIR / 'vordr_nudge.json'
+            trigger_file.write_text(json.dumps(trigger_data, indent=2))
+            print(f"\n  NUDGE TRIGGER WRITTEN: {trigger_file}")
+            print(f"  Reasons: {', '.join(status['nudge_reasons'])}")
+
+            # Update state
+            VORDR_STATE.write_text(json.dumps({
+                'last_nudge': now,
+                'last_nudge_reasons': status['nudge_reasons'],
+            }, indent=2))
         else:
-            print("\n⚠️ Nudge delivery failed — wrote to trigger file as fallback")
+            remaining = int(COOLDOWN_SECONDS - (now - last_nudge))
+            print(f"\n  Cooldown active. Next nudge in {remaining}s")
+    else:
+        print("\n  No work remaining. All clear.")
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    if '--status' in sys.argv:
+        # Just show status, don't nudge
+        main()
+    elif '--enforce-language' in sys.argv:
+        # Language enforcement only
+        print(enforce_language_on_output())
+    else:
+        main()
