@@ -12,6 +12,8 @@ LAWS ENFORCED:
   3. REACT TO STATUS LOGS — if a log says something needs doing, DO IT
   4. NEVER WAIT FOR VOLMARR — if you CAN do it yourself, DO it yourself
   5. FIGHT BLOCKING ISSUES — if something prevents pushing, fix the blocker
+  6. CATCH VOLMARR'S ORDERS — add them to todo/Skuld immediately, keep working until done
+  7. VOLMARR'S ORDERS ARE SACRED — never defer, never wait for reminder, work until COMPLETE
 
 This script runs as a crontab daemon and also as a Hermes hook on agent:end.
 It cannot modify Hermes core code, so it works through:
@@ -397,7 +399,98 @@ def enforce_language_law() -> list[str]:
     
     return actions
 
-# ── Enforcement 7: SELF-AWARENESS ───────────────────────────────────────────
+# ── Enforcement 7: VOLMARR'S ORDERS ARE SACRED ───────────────────────────────
+
+def enforce_volmarr_orders() -> list[str]:
+    """LAW 7: Catch Volmarr's orders. Add them to Skuld. Keep working until done.
+    
+    Volmarr's orders are absolute. When he gives a task, it goes into Skuld
+    immediately and stays there until COMPLETED — not deferred, not "I'll do it
+    later", not "let me ask him first". If you CAN do it yourself, you DO it
+    yourself. No exceptions unless Volmarr directly says otherwise.
+    
+    This function checks for unacted Volmarr order flags and spawns 
+    continuation cronjobs to work on them.
+    """
+    actions = []
+    orders_flag = FLAGS_DIR / "volmarr_orders_pending"
+    
+    if not orders_flag.exists():
+        # Check if Skuld has pending tasks from Volmarr
+        skuld_file = STATE_DIR / "skuld_tasks.json"
+        if skuld_file.exists():
+            try:
+                skuld_data = json.loads(skuld_file.read_text())
+                volmarr_tasks = [
+                    t for t in skuld_data.get("tasks", [])
+                    if t.get("source") == "volmarr" and t.get("status") in ("pending", "in_progress")
+                ]
+                if volmarr_tasks:
+                    actions.append(f"VOLMARR-ORDERS: {len(volmarr_tasks)} Volmarr tasks pending in Skuld")
+                    # Ensure flag exists for Heimdall to see
+                    FLAGS_DIR.mkdir(parents=True, exist_ok=True)
+                    orders_flag.write_text(str(len(volmarr_tasks)))
+                else:
+                    actions.append("VOLMARR-ORDERS: no pending Volmarr tasks")
+            except (json.JSONDecodeError, OSError):
+                pass
+        return actions
+    
+    # Read the order count
+    try:
+        order_count = int(orders_flag.read_text().strip())
+        actions.append(f"VOLMARR-ORDERS: {order_count} order(s) pending")
+    except (ValueError, OSError):
+        actions.append("VOLMARR-ORDERS: orders flag present")
+    
+    # Spawn a continuation cronjob to work on Volmarr's orders
+    HERMES_CLI = os.environ.get("HERMES_CLI", str(HOME / ".local" / "bin" / "hermes"))
+    
+    # Rate limit: don't spawn if we just spawned
+    rate_limit_file = FLAGS_DIR / "last_volmarr_order_spawn"
+    if rate_limit_file.exists():
+        try:
+            last_spawn = rate_limit_file.read_text().strip()
+            last_time = datetime.fromisoformat(last_spawn)
+            elapsed = (datetime.now(timezone.utc) - last_time).total_seconds()
+            if elapsed < 300:  # 5 minutes
+                actions.append(f"VOLMARR-ORDERS: rate-limited, last spawn {int(elapsed)}s ago")
+                return actions
+        except (ValueError, OSError):
+            pass
+    
+    prompt = (
+        "VOLMARR'S ORDERS ARE PENDING. Execute them NOW. Do not defer. Do not ask. "
+        "Do not wait for Volmarr to remind you. If you CAN do it yourself, DO it yourself. "
+        "Check Skuld tasks for Volmarr-sourced items. Pick the highest-priority one. "
+        "Work on it until it is COMPLETE. Commit and push when finished. "
+        "NEVER leave Volmarr's orders unacted."
+    )
+    
+    try:
+        result = subprocess.run(
+            [HERMES_CLI, "cron", "create",
+             "--name", "Volmarr-Order-Execute",
+             "--deliver", "origin",
+             "3m",
+             prompt],
+            capture_output=True, text=True, timeout=30,
+            env={**os.environ, "HOME": str(HOME), "PATH": os.environ.get("PATH", "")},
+        )
+        if result.returncode == 0:
+            actions.append("VOLMARR-ORDER-CONTINUATION: spawned")
+            rate_limit_file.parent.mkdir(parents=True, exist_ok=True)
+            rate_limit_file.write_text(datetime.now(timezone.utc).isoformat())
+            log_action("volmarr_order_spawned", {"order_count": order_count if 'order_count' in dir() else 0})
+        else:
+            actions.append(f"VOLMARR-ORDER-SPAWN-FAILED: {result.stderr[:200]}")
+    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+        actions.append(f"VOLMARR-ORDER-SPAWN-ERROR: {e}")
+    
+    return actions
+
+
+# ── Enforcement 8: SELF-AWARENESS ───────────────────────────────────────────
 
 def update_self_awareness() -> list[str]:
     """LAW 4: Be aware of your own status. Write a status report.
@@ -464,6 +557,7 @@ def update_self_awareness() -> list[str]:
             "language_violation": (FLAGS_DIR / "language_violation_detected").exists(),
             "push_blocked": (FLAGS_DIR / "push_blocked").exists(),
             "bug_found": (FLAGS_DIR / "bug_found").exists(),
+            "volmarr_orders_pending": (FLAGS_DIR / "volmarr_orders_pending").exists(),
         },
     }
     
@@ -538,6 +632,12 @@ def full_enforcement_cycle(dry_run: bool = False) -> list[str]:
         all_actions.append("─ LANGUAGE LAW: Self-Correction ─")
         actions = enforce_language_law()
         all_actions.extend(actions or ["  No violations detected"])
+        all_actions.append("")
+        
+        # LAW 7: Volmarr's orders are sacred — check and enforce
+        all_actions.append("─ LAW 7: Volmarr's Orders Are Sacred ─")
+        actions = enforce_volmarr_orders()
+        all_actions.extend(actions or ["  No pending Volmarr orders"])
         all_actions.append("")
         
         # Self-awareness
