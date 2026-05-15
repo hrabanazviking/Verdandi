@@ -165,6 +165,14 @@ class Reactor:
                 action_name="preemptive_heal",
                 min_severity=CheckSeverity.WARNING,
             ),
+            # v0.4.0: DISCIPLINE — Heimdall enforces commit/push/continue
+            # ANY check at WARNING+ triggers Heimdall enforcement.
+            # The conditions are evaluated per-repo in the action itself.
+            ReactionRule(
+                check_name="projects",
+                action_name="discipline_enforcement",
+                min_severity=CheckSeverity.WARNING,
+            ),
         ]
 
         # Load custom rules from config

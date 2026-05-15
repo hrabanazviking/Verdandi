@@ -43,10 +43,14 @@ class MjölnirAction(BaseAction):
     description = "Auto-commit and push dirty/unpushed git repositories"
     trigger_checks = ["projects"]
     trigger_severity = CheckSeverity.WARNING
-    cooldown_seconds = 3600  # Don't push the same repo more than once per hour
+    cooldown_seconds = 600  # DISCIPLINE: 10 minutes — push promptly, don't queue
 
-    # Repos to never auto-push (safety blacklist)
-    BLOCKLIST: list[str] = []
+    AUTH_SWITCH_REPOS = {
+        "NorseSagaEngine": "hrabanazviking",
+        "mimir-well": "runafreyjasdottir",
+        "RunaUniversity2040": "runafreyjasdottir",
+        "verdandi": "runafreyjasdottir",
+    }
 
     # Repos to always auto-push (even in dry-run)
     ALLOWLIST: list[str] = []
@@ -59,9 +63,9 @@ class MjölnirAction(BaseAction):
         targets_failed = []
 
         for repo_name, repo_info in repos.items():
-            # Skip blacklisted repos
-            if repo_name in self.BLOCKLIST:
-                logger.debug(f"Skipping blocklisted repo: {repo_name}")
+            # Only act on repos we have auth config for (safety)
+            if repo_name not in self.AUTH_SWITCH_REPOS:
+                logger.debug(f"Skipping unconfigured repo: {repo_name}")
                 continue
 
             repo_path = Path(repo_info.get("path", ""))
@@ -159,8 +163,19 @@ class MjölnirAction(BaseAction):
             return False
 
     def _auto_push(self, repo_path: Path, repo_name: str, unpushed_count: int) -> bool:
-        """Auto-push unpushed commits in a repo."""
+        """Auto-push unpushed commits in a repo with auth switching."""
         try:
+            # Switch to correct GitHub auth for this repo
+            auth_user = self.AUTH_SWITCH_REPOS.get(repo_name)
+            if auth_user:
+                logger.info(f"Mjölnir: switching gh auth to {auth_user} for {repo_name}")
+                switch_result = subprocess.run(
+                    ["gh", "auth", "switch", "--user", auth_user],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if switch_result.returncode != 0:
+                    logger.warning(f"gh auth switch failed for {auth_user}: {switch_result.stderr}")
+
             result = subprocess.run(
                 ["git", "push"],
                 cwd=str(repo_path), capture_output=True, text=True, timeout=60

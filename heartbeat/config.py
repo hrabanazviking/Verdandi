@@ -80,8 +80,8 @@ DEFAULTS: dict[str, Any] = {
         "service_cooldown_minutes": 5,     # Wait between restart attempts
         
         # Project thresholds
-        "unpushed_commits_warning": 5,    # Commits behind remote
-        "unpushed_commits_critical": 20,   # Very far behind
+        "unpushed_commits_warning": 1,    # DISCIPLINE: ANY unpushed commit is a warning
+        "unpushed_commits_critical": 5,    # DISCIPLINE: 5+ unpushed is critical
         "stale_branch_days": 30,           # Days before branch is "stale"
     },
     
@@ -120,6 +120,7 @@ DEFAULTS: dict[str, Any] = {
     
     # Reactor integration
     "reactor": {
+        "dry_run": False,                   # DISCIPLINE: ACT by default, don't simulate
         "run_on_degraded": True,            # Run reactor when state degrades
         "run_on_critical": True,             # Run reactor in critical state
         "reactor_path": "",                 # Empty = use default from paths

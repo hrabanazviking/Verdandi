@@ -432,7 +432,7 @@ def main():
     
     # react
     sp = sub.add_parser("react", help="Run checks and show what actions would be triggered")
-    sp.add_argument("--dry-run", action="store_true", default=True, help="Dry-run mode (default: True)")
+    sp.add_argument("--dry-run", action="store_true", default=False, help="Dry-run mode (simulate actions without executing)")
     sp.add_argument("--execute", action="store_true", help="Actually execute actions (not dry-run)")
     
     args = parser.parse_args()

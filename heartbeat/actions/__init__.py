@@ -28,6 +28,7 @@ from heartbeat.actions.base import (
 )
 from heartbeat.actions.mjölnir import MjölnirAction
 from heartbeat.actions.gungnir import GungnirAction
+from heartbeat.actions.heimdall import HeimdallAction
 from heartbeat.actions.bifrǫst import BifrǫstAction
 from heartbeat.actions.eir_action import EirAction
 from heartbeat.actions.vor_action import VörAction

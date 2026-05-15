@@ -298,7 +298,11 @@ class HeartbeatDaemon:
                 self._checks[name] = check_class(self.config)
 
         # Initialize reactor (check → action bridge)
-        dry_run = self.config.get("reactor.dry_run", True)  # Default dry-run for safety
+        # DISCIPLINE: Reactor must ACT by default, not dry-run.
+        # Dry-run was the original safe default, but safe defaults mean
+        # nothing ever gets pushed and nothing ever gets fixed.
+        # The heartbeat exists to ENFORCE discipline, not simulate it.
+        dry_run = self.config.get("reactor.dry_run", False)  # Default: ACT, don't simulate
         self._reactor = Reactor(config=self.config, dry_run=dry_run)
 
         # Circuit breakers for each check — prevents cascading failures
