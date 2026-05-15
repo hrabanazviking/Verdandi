@@ -189,8 +189,8 @@ def check_auto_continue_enforcement(dry_run: bool = False) -> list[str]:
         result = subprocess.run(
             [HERMES_CLI, "cron", "create",
              "--name", f"thrymr-continue-{task_name[:30]}",
-             "--schedule", "1m",
              "--deliver", "origin",
+             "1m",
              prompt],
             capture_output=True, text=True, timeout=30,
         )
@@ -285,8 +285,8 @@ def check_skuld_stalled_tasks(dry_run: bool = False) -> list[str]:
             result = subprocess.run(
                 [HERMES_CLI, "cron", "create",
                  "--name", f"thrymr-task-{task_id}",
-                 "--schedule", "2m",
                  "--deliver", "origin",
+                 "2m",
                  prompt],
                 capture_output=True, text=True, timeout=30,
             )
