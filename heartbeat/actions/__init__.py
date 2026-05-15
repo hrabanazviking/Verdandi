@@ -45,4 +45,5 @@ __all__ = [
     "BifrǫstAction",
     "EirAction",
     "VörAction",
+    "HeimdallAction",
 ]

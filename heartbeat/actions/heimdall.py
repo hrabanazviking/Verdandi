@@ -376,3 +376,87 @@ if __name__ == "__main__":
             f"Error: {e}\nTimestamp: {datetime.now(timezone.utc).isoformat()}\n"
         )
         sys.exit(0)  # Still exit 0 — never block the pipeline
+
+# ─────────────────────────────────────────────────────
+# HeimdallAction — BaseAction subclass for the reactor
+# ─────────────────────────────────────────────────────
+
+import logging
+
+from heartbeat.actions.base import (
+    BaseAction, ActionContext, ActionResult, ActionSeverity, CheckSeverity,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class HeimdallAction(BaseAction):
+    """Auto-commit, auto-push, and auto-continue enforcement action.
+
+    Triggered by project health checks when repos have uncommitted
+    changes or unpushed commits. Also triggers on any WARNING+ severity
+    to ensure no dirty work is left behind.
+
+    This is the BaseAction wrapper for the heimdall module functions,
+    enabling integration with Verðandi's reactor pattern.
+    """
+
+    name = "heimdall"
+    description = "Auto-commit, auto-push, and auto-continue enforcement"
+    trigger_checks = ["projects"]  # Triggered by project health checks
+    trigger_severity = CheckSeverity.WARNING
+    cooldown_seconds = 300  # 5 minutes between Heimdall actions
+
+    def _execute(self, ctx: ActionContext) -> ActionResult:
+        """Execute Heimdall enforcement: commit, push, and continue tasks."""
+        details = ctx.trigger_details
+        targets_affected = []
+        targets_failed = []
+
+        # Step 1: Auto-commit dirty repos
+        commit_actions = auto_commit_all()
+        for action in commit_actions:
+            if action.startswith("COMMITTED"):
+                targets_affected.append(action)
+            elif "FAILED" in action:
+                targets_failed.append(action)
+
+        # Step 2: Auto-push unpushed repos
+        push_actions = auto_push_all()
+        for action in push_actions:
+            if action.startswith("PUSHED"):
+                targets_affected.append(action)
+            elif "FAILED" in action:
+                targets_failed.append(action)
+
+        # Step 3: Check for unfinished tasks (don't spawn — just report)
+        task_actions = spawn_task_continuation()
+        for action in task_actions:
+            if action.startswith("SPAWNED"):
+                targets_affected.append(action)
+
+        if targets_failed:
+            return ActionResult(
+                action_name=self.name,
+                severity=ActionSeverity.PARTIAL,
+                message=f"Heimdall: {len(targets_affected)} succeeded, {len(targets_failed)} failed",
+                details={
+                    "commits": commit_actions,
+                    "pushes": push_actions,
+                    "tasks": task_actions,
+                },
+                targets_affected=targets_affected,
+                targets_failed=targets_failed,
+            )
+        else:
+            return ActionResult(
+                action_name=self.name,
+                severity=ActionSeverity.SUCCESS,
+                message=f"Heimdall: {len(targets_affected)} actions completed",
+                details={
+                    "commits": commit_actions,
+                    "pushes": push_actions,
+                    "tasks": task_actions,
+                },
+                targets_affected=targets_affected,
+            )
