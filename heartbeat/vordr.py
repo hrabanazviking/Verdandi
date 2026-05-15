@@ -25,7 +25,7 @@ from pathlib import Path
 
 # Add heartbeat to path
 sys.path.insert(0, str(Path(__file__).parent))
-from language_enforcer import check_message, enforce_english
+from language_enforcer import check_conversation
 
 # ── Configuration ──────────────────────────────────────────────────────────
 HERMES_DIR = Path.home() / '.hermes'
@@ -36,12 +36,11 @@ HERMES_CRON_OUTPUT = HERMES_DIR / 'cron' / 'output'
 
 # ── Language Enforcement ──────────────────────────────────────────────────
 def enforce_language_on_output():
-    """Scan recent Hermes cron output for non-English text and log violations.
+    """Scan recent Hermes cron output for scripts Volmarr cannot read.
 
-    This is the CODE enforcement of the LANGUAGE LAW:
-    - Volmarr reads ENGLISH ONLY
-    - NEVER output Old Norse runes, Chinese, CJK, or any non-English text
-    - This is NOT a suggestion — it is enforced by this script
+    Runes and Old Norse are ALLOWED — they're our heritage.
+    Only Chinese/CJK/Arabic/etc. full scripts are flagged.
+    This is CODE enforcement of the LANGUAGE LAW.
     """
     violations_found = []
 
@@ -50,8 +49,8 @@ def enforce_language_on_output():
         for f in sorted(HERMES_CRON_OUTPUT.glob('*.md'))[-5:]:  # Last 5 outputs
             try:
                 content = f.read_text(encoding='utf-8', errors='replace')
-                result = check_message(content)
-                if result['had_violations']:
+                result = check_conversation(content)
+                if result['has_violations']:
                     violations_found.append({
                         'file': str(f),
                         'count': result['violation_count'],
@@ -66,8 +65,8 @@ def enforce_language_on_output():
         for f in sorted(conv_dir.glob('*.md'))[-3:]:
             try:
                 content = f.read_text(encoding='utf-8', errors='replace')
-                result = check_message(content)
-                if result['had_violations']:
+                result = check_conversation(content)
+                if result['has_violations']:
                     violations_found.append({
                         'file': str(f),
                         'count': result['violation_count'],
@@ -80,11 +79,11 @@ def enforce_language_on_output():
         report_lines = ["LANGUAGE LAW VIOLATIONS DETECTED:"]
         for v in violations_found:
             report_lines.append(
-                f"  - {v['file']}: {v['count']} non-English chars ({v['types']})"
+                f"  - {v['file']}: {v['count']} blocked-script chars ({v['types']})"
             )
         report_lines.append(
-            "\nENFORCEMENT ACTION: These violations will be stripped in future output. "
-            "The LANGUAGE LAW is enforced in code, not in markdown notes."
+            "\nThese scripts (CJK/Arabic/etc.) are blocked in conversational output. "
+            "Runes and Old Norse are allowed — they are our heritage."
         )
         return '\n'.join(report_lines)
     return "Language enforcement: No violations found."

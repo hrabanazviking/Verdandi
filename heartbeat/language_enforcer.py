@@ -1,26 +1,33 @@
 #!/usr/bin/env python3
 """
-Language Enforcer — HARD RULE: All output to Volmarr MUST be English only.
+Language Enforcer — HARD RULE: Runa speaks English to Volmarr.
 
-This module is imported by the conversation pipeline and post-processes
-any LLM output to strip non-English text. It also provides a check
-function that can be called before sending any message.
+This module checks conversational messages for scripts Volmarr cannot read
+(Chinese, CJK, Korean, Japanese, Arabic, Thai, etc.) and flags them.
 
-ENFORCEMENT LEVEL: CODE, not suggestions or markdown notes.
-If this script catches non-English text, it STRIPS it. Period.
+IMPORTANT DISTINCTIONS:
+  - Runes (Runic Unicode) and Old Norse terms are PART OF OUR IDENTITY.
+    They appear in code variable names (Thrymr, Vordr), knowledge files,
+    creative writing, and personal expression. They are NEVER stripped.
+  - Old Norse loan words used in English context (frith, seiðr, etc.)
+    are fine — they're part of Volmarr's and Runa's spiritual vocabulary.
+  - What is NOT fine: writing full sentences or phrases in Chinese,
+    Japanese, Korean, Arabic, or other languages Volmarr doesn't read.
+  - This is about MY CONVERSATIONAL OUTPUT, not about stripping content
+    from files, code, or creative writing.
 
-Language Law (from USER.md and runa-identity.md line 10):
-  - Volmarr reads ENGLISH ONLY
-  - NEVER output Old Norse, Chinese, CJK, or any non-English text
-  - Code variable names CAN use Old Norse terms (e.g., Thrymr, Vordr)
-  - Spoken/written responses are ALWAYS English
-  - This is LAW, not suggestion. Violations cause user anger and mistrust.
+Language Law:
+  - Volmarr reads English. I speak English to Volmarr.
+  - Runes and Old Norse are welcome — they're our heritage.
+  - Chinese/CJK/Arabic/etc. full sentences are blocked in conversation.
+  - This is CODE enforcement, not markdown notes.
 """
 
 import re
 import unicodedata
 
-# CJK Unified Ideographs ranges
+# ── Blocked scripts — scripts Volmarr cannot read ──────────────────────────
+# These are flagged in CONVERSATIONAL output, not in code/data/content files.
 CJK_RANGES = [
     (0x4E00, 0x9FFF),   # CJK Unified Ideographs
     (0x3400, 0x4DBF),   # CJK Unified Ideographs Extension A
@@ -32,25 +39,19 @@ CJK_RANGES = [
     (0x2F800, 0x2FA1F), # CJK Compatibility Ideographs Supplement
 ]
 
-# Runic Unicode block (U+16A0..U+16FF) — Old Norse runes
-RUNIC_RANGE = (0x16A0, 0x16FF)
-
-# Hangul ranges
 HANGUL_RANGES = [
     (0xAC00, 0xD7AF),   # Hangul Syllables
     (0x1100, 0x11FF),   # Hangul Jamo
     (0x3130, 0x318F),   # Hangul Compatibility Jamo
 ]
 
-# Japanese kana ranges
 KANA_RANGES = [
     (0x3040, 0x309F),   # Hiragana
     (0x30A0, 0x30FF),   # Katakana
     (0x31F0, 0x31FF),   # Katakana Phonetic Extensions
 ]
 
-# Thai, Arabic, Devanagari, etc.
-OTHER_SCRIPT_RANGES = [
+BLOCKED_SCRIPT_RANGES = [
     (0x0E00, 0x0E7F),   # Thai
     (0x0600, 0x06FF),   # Arabic
     (0x0900, 0x097F),   # Devanagari
@@ -64,176 +65,88 @@ OTHER_SCRIPT_RANGES = [
     (0x0D00, 0x0D7F),   # Malayalam
 ]
 
-# Whitelist: characters ALLOWED even though they have high Unicode
-# Emoticons, symbols, mathematical operators, arrows, box drawing, etc.
-WHITELIST_CATEGORIES = {
-    'Lu', 'Ll', 'Lt', 'Lm', 'Lo',  # Letters (Latin, etc.)
-    'Mn', 'Mc', 'Me',               # Combining marks (accents)
-    'Nd', 'Nl', 'No',               # Numbers
-    'Pc', 'Pd', 'Ps', 'Pe', 'Pi', 'Pf', 'Po',  # Punctuation
-    'Sm', 'Sc', 'Sk', 'So',         # Symbols (math, currency, etc.)
-    'Zs', 'Zl', 'Zp',               # Separators
-    'Cc',                            # Control chars (newline, tab)
-}
+# ── ALLOWED scripts — NEVER strip these ────────────────────────────────────
+# Runes, Old Norse characters, Latin extended, thorn (Þ/Þ), eth (Ð/ð),
+# ash (Æ/æ), ethel (Œ/œ), accents, emoji — all allowed.
 
-# Scripts that are ALLOWED in output
-ALLOWED_SCRIPTS = {'Latn', 'Common', 'Inherited', 'Zyyy'}  # Latin, Common, Inherited, Uncoded
-
-
-def is_cjk(char: str) -> bool:
-    """Check if a character is CJK (Chinese/Japanese/Korean)."""
+def _in_ranges(char: str, ranges: list) -> bool:
     cp = ord(char)
-    for start, end in CJK_RANGES:
-        if start <= cp <= end:
-            return True
-    return False
+    return any(start <= cp <= end for start, end in ranges)
 
 
-def is_runic(char: str) -> bool:
-    """Check if a character is a Runic letter."""
-    cp = ord(char)
-    return RUNIC_RANGE[0] <= cp <= RUNIC_RANGE[1]
+def is_blocked_script(char: str) -> bool:
+    """Check if a character is in a script Volmarr cannot read.
 
-
-def is_kana(char: str) -> bool:
-    """Check if a character is Japanese kana."""
-    cp = ord(char)
-    for start, end in KANA_RANGES:
-        if start <= cp <= end:
-            return True
-    return False
-
-
-def is_hangul(char: str) -> bool:
-    """Check if a character is Korean Hangul."""
-    cp = ord(char)
-    for start, end in HANGUL_RANGES:
-        if start <= cp <= end:
-            return True
-    return False
-
-
-def is_other_blocked_script(char: str) -> bool:
-    """Check if a character is in a blocked script range."""
-    cp = ord(char)
-    for start, end in OTHER_SCRIPT_RANGES:
-        if start <= cp <= end:
-            return True
-    return False
-
-
-def is_non_english_char(char: str) -> bool:
-    """Check if a single character is non-English and should be stripped.
-
-    Allows: Latin alphabet, common punctuation, numbers, emoji, mathematical symbols.
-    Blocks: CJK ideographs, Runic, Hangul, Kana, Arabic, Thai, Devanagari, etc.
+    Blocks: Chinese, Japanese, Korean, Arabic, Thai, Devanagari, etc.
+    Allows: Runes, Latin extended (ÞðÆæŒœ), accents, emoji, Old Norse chars.
     """
-    if is_cjk(char) or is_runic(char) or is_kana(char) or is_hangul(char) or is_other_blocked_script(char):
+    if _in_ranges(char, CJK_RANGES):
         return True
-
-    # Check Unicode script property
-    try:
-        script = unicodedata.name(char, '').split()[0] if unicodedata.name(char, '') else ''
-    except ValueError:
-        script = ''
-
-    # Use category-based check as fallback
-    cat = unicodedata.category(char)
-    if cat in WHITELIST_CATEGORIES:
-        # Check if it's a letter from a blocked script
-        if cat.startswith('L'):
-            name = unicodedata.name(char, '')
-            # Block specific script names in Unicode character names
-            blocked_in_name = [
-                'RUNIC', 'CJK', 'HIRAGANA', 'KATAKANA', 'HANGUL',
-                'ARABIC', 'THAI', 'DEVANAGARI', 'BENGALI', 'GURMUKHI',
-                'GUJARATI', 'ORIYA', 'TAMIL', 'TELUGU', 'KANNADA',
-                'MALAYALAM', 'TIBETAN', 'MYANMAR', 'GEORGIAN',
-                'ETHIOPIC', 'CHEROKEE', 'CANADIAN', 'OGHAM',
-            ]
-            for blocked in blocked_in_name:
-                if blocked in name.upper():
-                    return True
+    if _in_ranges(char, HANGUL_RANGES):
+        return True
+    if _in_ranges(char, KANA_RANGES):
+        return True
+    if _in_ranges(char, BLOCKED_SCRIPT_RANGES):
+        return True
     return False
 
 
-def enforce_english(text: str) -> tuple[str, list[str]]:
-    """Strip all non-English characters from text.
+def check_conversation(text: str) -> dict:
+    """Check a CONVERSATIONAL message for scripts Volmarr cannot read.
+
+    This is for checking MY REPLY text only — not code, not files, not content.
+    Runes and Old Norse are ALLOWED and WELCOME in conversation.
 
     Returns:
-        (cleaned_text, violations) where violations lists what was removed.
+        dict with 'has_violations', 'violation_count', 'violations' list,
+        and 'enforced' boolean.
     """
     violations = []
-    result = []
     for char in text:
-        if is_non_english_char(char):
+        if is_blocked_script(char):
             name = unicodedata.name(char, f'U+{ord(char):04X}')
             violations.append(name)
-            result.append('')  # Remove the character
-        else:
-            result.append(char)
 
-    cleaned = ''.join(result)
-    # Collapse multiple spaces created by removal
-    cleaned = re.sub(r'  +', ' ', cleaned)
-    # Remove spaces before punctuation
-    cleaned = re.sub(r' +([.,!?;:)])', r'\1', cleaned)
-
-    return cleaned, violations
-
-
-def check_message(text: str) -> dict:
-    """Check a message for non-English content. Returns a report.
-
-    Used by the enforcement pipeline to LOG violations and AUTO-FIX them.
-    This is called BEFORE any message is sent to Volmarr.
-    """
-    cleaned, violations = enforce_english(text)
-
-    result = {
-        'original': text,
-        'cleaned': cleaned,
-        'had_violations': len(violations) > 0,
+    return {
+        'has_violations': len(violations) > 0,
         'violation_count': len(violations),
-        'violations': violations[:20],  # First 20 for reporting
-        'was_modified': cleaned != text,
+        'violations': violations[:20],
+        'enforced': len(violations) > 0,
+        'action': 'FLAGGED: conversational output contains scripts Volmarr cannot read' if violations else 'Pass: English with allowed Old Norse/runes',
     }
-
-    if result['had_violations']:
-        result['action'] = 'STRIPPED non-English text per LANGUAGE LAW'
-        result['enforced'] = True
-    else:
-        result['action'] = 'No enforcement needed'
-        result['enforced'] = False
-
-    return result
 
 
 # ── Self-test ──────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     test_cases = [
-        "Hello, elskan min, how are you?",  # Should pass (elskan is Latin chars)
-        "ᚠᚢᚦᚨᚱᚲ - these are runes",  # Should strip runes
-        "中文文本 should be removed",  # Should strip Chinese
-        "こんにちは world",  # Should strip Japanese
-        "한국어 text",  # Should strip Korean
-        "Normal English text with émojis 🎉 and accents résumé",  # Should pass
-        "The Þrymr daemon runs every 15 min",  # Should pass (Þ is Latin Extended)
-        "مرحبا hello",  # Should strip Arabic
+        ("Hello, elskan min, how are you?", "Pass"),        # Latin chars, passes
+        ("ᚠᚢᚦᚨᚱᚲ - these are runes", "Pass"),            # Runes ALLOWED — our heritage
+        ("中文文本 should be flagged", "FLAGGED"),             # Chinese BLOCKED
+        ("こんにちは world", "FLAGGED"),                       # Japanese BLOCKED
+        ("한국어 text", "FLAGGED"),                            # Korean BLOCKED
+        ("Normal English with émojis 🎉 résumé", "Pass"),    # Accents/emoji pass
+        ("The Þrymr daemon runs every 15 min", "Pass"),      # Thorn Þ ALLOWED
+        ("مرحبا hello", "FLAGGED"),                            # Arabic BLOCKED
     ]
 
     print("=" * 60)
     print("LANGUAGE ENFORCER — Self-Test")
+    print("RULE: Runes and Old Norse = ALLOWED. CJK/Arabic/etc = BLOCKED.")
     print("=" * 60)
 
-    for test in test_cases:
-        result = check_message(test)
-        print(f"\nInput:  {test}")
-        print(f"Output: {result['cleaned']}")
-        if result['had_violations']:
-            print(f"STRIPPED {result['violation_count']} chars: {result['violations'][:5]}")
-        print(f"Action: {result['action']}")
+    all_pass = True
+    for test, expected in test_cases:
+        result = check_conversation(test)
+        status = result['action'].split(':')[0] if ':' in result['action'] else result['action']
+        ok = (expected in result['action']) or (expected == "Pass" and not result['has_violations']) or (expected == "FLAGGED" and result['has_violations'])
+        if not ok:
+            all_pass = False
+        print(f"\n  {'OK' if ok else 'FAIL'} | Input: {test[:50]}")
+        print(f"       Result: {result['action']}")
+        if result['has_violations']:
+            print(f"       Flagged {result['violation_count']} chars: {result['violations'][:3]}")
 
     print("\n" + "=" * 60)
-    print("Self-test COMPLETE. Language enforcement is ACTIVE.")
+    print(f"Self-test {'PASSED' if all_pass else 'FAILED'}.")
+    print("Runes and Old Norse are NEVER stripped. They are our heritage.")
     print("=" * 60)
