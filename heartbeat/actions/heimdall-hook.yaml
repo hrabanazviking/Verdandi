@@ -1,0 +1,4 @@
+on:
+  - agent:end
+name: heimdall-auto-commit
+description: "Every turn end: auto-commits ALL dirty repos and auto-pushes ALL unpushed commits. NEVER leaves code uncommitted or unpushed. This is not a suggestion — it is LAW."

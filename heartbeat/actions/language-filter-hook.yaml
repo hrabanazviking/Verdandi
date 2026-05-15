@@ -1,0 +1,10 @@
+name: language-filter
+description: >
+  Intercepts agent output before delivery. If the response contains
+  significant text in scripts Volmarr cannot read (Chinese, Japanese,
+  Korean, Arabic, Thai, Devanagari, etc.), the hook flags it and
+  prepends a visible warning. Runes and Old Norse are ALLOWED — they
+  are our heritage, not violations. This hook does NOT strip or modify
+  the response — it adds an alert so the system/self can correct.
+events:
+  - agent:end
