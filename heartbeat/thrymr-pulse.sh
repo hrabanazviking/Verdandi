@@ -5,8 +5,11 @@
 
 set -euo pipefail
 
-THRYMR="/home/pi/verdandi/heartbeat/thrymr.py"
-LOG="/home/pi/.hermes/logs/thrymr.log"
+# Ensure hermes CLI is on PATH (crontab has minimal PATH)
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+THRYMR="$HOME/verdandi/heartbeat/thrymr.py"
+LOG="$HOME/.hermes/logs/thrymr.log"
 
 mkdir -p "$(dirname "$LOG")"
 

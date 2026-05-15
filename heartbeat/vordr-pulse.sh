@@ -3,8 +3,11 @@
 # Runs every 5 minutes. If work remains, nudges Runa to continue.
 set -euo pipefail
 
-VORDR="/home/pi/verdandi/heartbeat/vordr.py"
-LOG="/home/pi/.hermes/logs/vordr.log"
+# Ensure hermes CLI is on PATH (crontab has minimal PATH)
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+VORDR="$HOME/verdandi/heartbeat/vordr.py"
+LOG="$HOME/.hermes/logs/vordr.log"
 mkdir -p "$(dirname "$LOG")"
 
 echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) Vörðr pulse" >> "$LOG"

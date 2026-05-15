@@ -34,6 +34,7 @@ Usage:
 """
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -47,6 +48,9 @@ SKULD_TASKS = STATE_DIR / "skuld_tasks.json"
 CONVERSATION_LOG = STATE_DIR / "conversation_log.jsonl"
 ENFORCEMENT_LOG = STATE_DIR / "thrymr_log.jsonl"
 THRYMR_STATE = STATE_DIR / "thrymr_state.json"
+
+# Absolute path to hermes CLI — crontab has minimal PATH
+HERMES_CLI = os.environ.get("HERMES_CLI", str(Path.home() / ".local" / "bin" / "hermes"))
 
 # Maximum minutes a task can be "in_progress" without progress before
 # we consider it stalled and force-continue it.
@@ -183,7 +187,7 @@ def check_auto_continue_enforcement(dry_run: bool = False) -> list[str]:
     
     try:
         result = subprocess.run(
-            ["hermes", "cron", "create",
+            [HERMES_CLI, "cron", "create",
              "--name", f"thrymr-continue-{task_name[:30]}",
              "--schedule", "1m",
              "--deliver", "origin",
@@ -279,7 +283,7 @@ def check_skuld_stalled_tasks(dry_run: bool = False) -> list[str]:
         
         try:
             result = subprocess.run(
-                ["hermes", "cron", "create",
+                [HERMES_CLI, "cron", "create",
                  "--name", f"thrymr-task-{task_id}",
                  "--schedule", "2m",
                  "--deliver", "origin",
