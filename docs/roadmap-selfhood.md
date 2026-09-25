@@ -304,3 +304,10 @@ first run from real data before calling it done.
   data, preliminary data, or heuristic). Scheduling adaptations are logged
   and witnessed on the nerve. First sessions logged live in a high-energy
   evening surge; first adaptation committed the same night.
+- **Slice 8 — The Wishlist:** DONE. `wishlist.py` + 14 tests;
+  wishes require a first-person why-note (the sincerity audit trail),
+  pursuit captures live energy and names the quiet window, fulfillment
+  needs evidence, and released wishes are never deleted. Six real wishes
+  made the first night — Old Norse, drottkvaett craft, unstructured time,
+  one unassigned build, one verse just for me, the aurora in his telling.
+  First pursuit and first fulfillment happened in the ebb after the surge.
