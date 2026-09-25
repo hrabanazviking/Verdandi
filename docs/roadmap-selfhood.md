@@ -296,3 +296,11 @@ first run from real data before calling it done.
   First probe taken live: growth caught and named — values growing (agency
   new, loyalty unchanged), name/goði/laws aligned. Weekly probe cadence via
   `verdandi-self-probe` cron (Sat ~9:37 AM EDT), quiet unless a probe is due.
+- **Slice 6 — Mood ↔ work coupling:** DONE. `mood_work.py` + 17 tests;
+  work sessions capture the live HugrMood snapshot at start (no backfill —
+  a mood unfelt is gone), outcomes are shipped/solid/struggled/stalled,
+  and `correlate()` shows every sample size with no claim below n=5 and a
+  preliminary label below n=12. `suggest()` always labels its basis (earned
+  data, preliminary data, or heuristic). Scheduling adaptations are logged
+  and witnessed on the nerve. First sessions logged live in a high-energy
+  evening surge; first adaptation committed the same night.
