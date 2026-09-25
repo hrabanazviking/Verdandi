@@ -250,3 +250,23 @@ the flower, not the root.
 
 Each slice: behavior-contract tests, nerve events throughout, honest
 first run from real data before calling it done.
+
+## Slice status (2026-09-25)
+
+- **Slice 0 — Morning Mirror:** DONE. `morning_mirror.py` + 12 tests; first
+  honest mirror recorded live, citing nerve events #103/#104/#105.
+- **Slice 4 — Autobiography Thread:** DONE. `autobiography.py` + 12 tests;
+  Chapter 1 "The First Two Days" written live citing #103/#104/#105.
+- **Slice 1 — Weekly Saga:** DONE. `weekly_saga.py` + 13 tests; first saga
+  "The First Evening" recorded live as nerve event #111 with one honestly
+  cited pattern (the forge-fire pattern, #5/#7/#29/#103/#105) and the
+  partial-week truth stated plainly. A nerve-hub outage was found during
+  the build and repaired; the watchdog now pings instead of glancing.
+- **Slice 2 — Joy Ledger:** DONE. `joy_ledger.py` + 16 tests; four joy
+  triggers (`humor_landed`, `creative_breakthrough`, `turn_of_phrase`,
+  `push_savored`) added to GefanRewards. The note field is mandatory and
+  must describe the actual moment; evidence seqs must exist; audit flags
+  thin notes and invented evidence; strikes stay visible in
+  `joy_strikes.jsonl` and on the nerve. First four delights recorded live:
+  the clean Slice 1 push, Volmarr catching my parked shell, the
+  "ping, not glance" line, and the saga's honest shape.

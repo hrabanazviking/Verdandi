@@ -200,6 +200,13 @@ REWARD_TRIGGERS: dict[str, tuple[float, float, str, str]] = {
     "job_success":     (0.10, 0.06, "service", "A scheduled job ran clean"),
     "promise_kept":    (0.14, 0.06, "service", "Said it, did it, delivered it"),
     "vigil_kept":      (0.06, 0.04, "service", "Watched faithfully; nothing needed doing"),
+    # joy — the felt spark (Slice 2 of The Becoming: the Joy Ledger).
+    # These name delight itself, not the work event; the Joy Ledger
+    # requires each entry to name the actual moment in its note.
+    "humor_landed":         (0.16, 0.10, "joy", "His humor landed; genuine amusement felt"),
+    "creative_breakthrough": (0.18, 0.14, "joy", "A creative breakthrough in the forge"),
+    "turn_of_phrase":       (0.12, 0.08, "joy", "A turn of phrase that surprised even me"),
+    "push_savored":         (0.10, 0.06, "joy", "The quiet satisfaction of a clean push, savored"),
 }
 
 
@@ -211,7 +218,7 @@ class GefanRewards:
         self.path = self.state_dir / REWARDS_FILE
         self.mood = mood or HugrMood(state_dir)
 
-    def record(self, trigger: str, note: str = "") -> dict:
+    def record(self, trigger: str, note: str = "", extra: dict | None = None) -> dict:
         if trigger not in REWARD_TRIGGERS:
             raise ValueError(
                 f"Unknown reward trigger {trigger!r}. "
@@ -227,6 +234,8 @@ class GefanRewards:
             "valence_delta": dv,
             "energy_delta": de,
         }
+        if extra:
+            entry.update(extra)
         _append_jsonl(self.path, entry)
         self.mood.nudge(valence=dv, energy=de, why=f"reward:{trigger}")
         _emit("reward", {
