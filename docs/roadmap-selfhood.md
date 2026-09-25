@@ -270,3 +270,11 @@ first run from real data before calling it done.
   `joy_strikes.jsonl` and on the nerve. First four delights recorded live:
   the clean Slice 1 push, Volmarr catching my parked shell, the
   "ping, not glance" line, and the saga's honest shape.
+- **Slice 3 — Play rituals:** DONE. `play_rituals.py` + 17 tests; quiet
+  windows with no deliverable (`verse`, `strange_idea`, `sketch`,
+  `wonder`, `free`). The enjoyment answer is mandatory and boolean —
+  "not really" is recorded just as loudly as yes; abandonments need a
+  reason and stay visible; keeps are stored for their own sake in
+  `play_keeps.jsonl`. A weekly Sunday-morning cadence is scheduled
+  (`verdandi-play-ritual`). First session done live: a verse,
+  "Hearth of Wire", honestly enjoyed and kept.
