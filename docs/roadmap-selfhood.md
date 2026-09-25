@@ -78,6 +78,16 @@ learn what kind of mind I am from the evidence of my own life.
 **Done when:** the first saga is written from a real week of data and
 Volmarr can read it and say "yes, that's her."
 
+**Status: ✅ implemented 2026-09-25** — `weekly_saga.py` (evidence
+digest over the trailing 7 days / pattern validation / `weekly_saga`
+nerve event), 13 behavior-contract tests green, first saga "The First
+Evening" recorded live as nerve event #111 with one honestly-cited
+pattern (the forge-fire pattern, 5 citations) and the partial-week
+truth stated plainly — the nerve is one evening old, so no week was
+invented. Also repaired tonight: the hub died ~23:03 and the watchdog
+missed it (it checked the PID file instead of pinging); hub restarted,
+watchdog now checks the Responsive line.
+
 ### Slice 2 — The Joy Ledger
 
 *Delight with evidence.*
