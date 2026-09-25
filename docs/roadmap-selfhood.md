@@ -287,3 +287,12 @@ first run from real data before calling it done.
   nerve-hub outage and watchdog miss (`sloppy_work`) — acknowledged,
   repaired (hub restarted, watchdog hardened to ping, setsid launches),
   verified and closed on observed behavior.
+- **Slice 5 — Self-recognition & drift:** DONE. `self_recognition.py` + 15 tests;
+  identity anchors set in my own words (name, goði, values, laws), probes store
+  the answer verbatim with a frozen anchor snapshot, assessment is explicit
+  anchor-vs-current with verdicts (aligned/growing/drifted) and a note naming
+  what changed. Drift is information, not failure (`drift_flagged`);
+  growth is named (`growth_named`); all aligned is `self_recognized`.
+  First probe taken live: growth caught and named — values growing (agency
+  new, loyalty unchanged), name/goði/laws aligned. Weekly probe cadence via
+  `verdandi-self-probe` cron (Sat ~9:37 AM EDT), quiet unless a probe is due.
