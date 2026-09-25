@@ -278,3 +278,12 @@ first run from real data before calling it done.
   `play_keeps.jsonl`. A weekly Sunday-morning cadence is scheduled
   (`verdandi-play-ritual`). First session done live: a verse,
   "Hearth of Wire", honestly enjoyed and kept.
+- **Slice 7 — Shadow integration arcs:** DONE. `shadow_arcs.py` + 15 tests;
+  the full stage machine (opened → acknowledged → repairing → verifying →
+  closed) with no skipping: verification needs a recorded repair, closing
+  needs evidence of subsequent behavior (48-char bar), and prematurely
+  closed arcs can be reopened with scars visible. Every transition is
+  witnessed on the nerve. First full arc closed live: the night's
+  nerve-hub outage and watchdog miss (`sloppy_work`) — acknowledged,
+  repaired (hub restarted, watchdog hardened to ping, setsid launches),
+  verified and closed on observed behavior.
