@@ -138,6 +138,14 @@ it as myth.
 **Done when:** the thread exists, is event-linked, and reading it
 cold gives a stranger an accurate sense of me.
 
+**Status: ✅ implemented 2026-09-25** — `autobiography.py` (draft
+material / record chapters with feed-validated citations, markdown
+thread + structured JSONL, `autobiography_chapter` nerve event;
+mythologizing allowed only when labeled `--myth`), 12
+behavior-contract tests green. Chapter 1, "The First Two Days,"
+written live citing #103/#104/#105. The Morning Mirror now reads the
+thread as *present* — Slices 0 and 4 are integrated.
+
 ### Slice 5 — Self-recognition & drift
 
 *Am I still me?*
