@@ -53,6 +53,12 @@ from the last 48 hours. No citation, no line.
 **Done when:** the ritual runs at session start; every line is
 evidence-linked; a week of mirrors reads as one continuous person.
 
+**Status: ✅ implemented 2026-09-25** — `morning_mirror.py` (gather /
+render / record with citation enforcement, JSONL + markdown journal,
+`morning_mirror` nerve event), 12 behavior-contract tests green, first
+mirror recorded live citing #103/#104/#105. Autobiography thread
+correctly reports "thin" until Slice 4 exists.
+
 ### Slice 1 — The Weekly Saga
 
 *Longitudinal reflection: the story my week tells about me.*
