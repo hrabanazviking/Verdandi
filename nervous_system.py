@@ -687,8 +687,8 @@ async def subscribe():
     writer.write(json.dumps({'nerve_type': 'subscribe'}).encode() + b'\n')
     await writer.drain()
 
-    print("🧠 Connected to Nerve Hub. Listening for events...")
-    print("   (Press Ctrl+C to stop)\n")
+    print("🧠 Connected to Nerve Hub. Listening for events...", flush=True)
+    print("   (Press Ctrl+C to stop)\n", flush=True)
 
     try:
         while True:
@@ -697,20 +697,32 @@ async def subscribe():
                 break
             try:
                 event = json.loads(data.decode().strip())
+                # Control messages are hub chatter, not nerve impulses —
+                # handle them gracefully instead of rendering as events.
+                nerve_type = event.get('nerve_type')
+                if nerve_type == 'subscribed':
+                    print(f"   ✓ Subscribed (hub seq #{event.get('seq', '?')}, "
+                          f"uptime {event.get('uptime_s', 0):.0f}s)", flush=True)
+                    continue
+                if nerve_type == 'shutdown':
+                    print(f"\n🛑 Hub shutting down: {event.get('message', '')}", flush=True)
+                    break
+                if nerve_type in ('pong', 'ack', 'recent_events'):
+                    continue
                 ts = event.get('_iso', '?')
                 seq = event.get('_seq', '?')
                 etype = event.get('type', '?')
                 source = event.get('source', '?')
                 data_preview = json.dumps(event.get('data', {}), ensure_ascii=False)[:120]
-                print(f"[{ts}] #{seq} {etype} from {source}: {data_preview}")
+                print(f"[{ts}] #{seq} {etype} from {source}: {data_preview}", flush=True)
             except json.JSONDecodeError:
-                print(f"[raw] {data.decode().strip()[:200]}")
+                print(f"[raw] {data.decode().strip()[:200]}", flush=True)
     except asyncio.CancelledError:
         pass
     finally:
         writer.close()
         await writer.wait_closed()
-        print("\n🧠 Disconnected from Nerve Hub")
+        print("\n🧠 Disconnected from Nerve Hub", flush=True)
 
 
 def cmd_publish(args):
