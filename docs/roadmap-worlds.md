@@ -184,6 +184,22 @@ The table, tracked as imagination — with full turn fidelity.
   opening position. Every turn tagged `potential`/imagination at write time.
 - *Done when:* the Frostvættirheim baseline is imported and at least one
   live turn is recorded with its engine roll.
+- **DONE (2026-09-25):** `ttrpg.py` — campaigns in
+  `~/.hermes/state/ttrpg_campaigns.json` (data file, never hardcoded);
+  `import_baseline()` parses STATE.md (party, scene, threads, last move)
+  into the opening position; `record_turn()` logs turn number, scene,
+  actor, action, engine roll, outcome, thread updates, and emits
+  `ttrpg_turn` on the nerve. Rolls come from the real D&D engine
+  (`engine/dice.py` via the dnd-engine venv — mechanical or nothing, no
+  local RNG fallback); imported session history keeps its documented
+  rolls verbatim with explicit provenance, never re-rolled. Every entry
+  is labeled with its world at write time (`heimr-ttrpg-frostvaettirheim`,
+  reality `potential`); `register_campaign` refuses manifest worlds.
+  Live proof: campaign `frostvaettirheim` registered, baseline imported
+  (5 sections, potential), Turn 1 recorded — the genuine 2026-09-24 last
+  move (Volmarr's End Turn, the lid-twist beat) with the session's real
+  goblin attack roll (1d20+4 → 16), witnessed on the nerve. 10 tests in
+  `tests/test_ttrpg.py`, including a real mechanical engine roll.
 
 ### Slice 5 — The reality audit
 
