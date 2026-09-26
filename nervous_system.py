@@ -59,6 +59,22 @@ SUBSCRIBER_TIMEOUT_S = 120          # Seconds before a subscriber is considered 
 SUBSCRIBER_PROBE_INTERVAL = 30     # How often to check for stale subscribers
 
 
+def _pid_is_hub(pid: int) -> bool:
+    """True only if pid exists AND is a nerve hub process (guards PID reuse)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists, can't inspect — treat as alive
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read().decode(errors="replace")
+        return "nervous_system" in cmd and "serve" in cmd
+    except OSError:
+        return True  # /proc unreadable — fall back to existence check
+
+
 def log_msg(msg: str):
     """Append to nerve hub log with file locking for concurrent safety."""
     ts = datetime.now().isoformat() + 'Z'
@@ -336,14 +352,12 @@ class NerveHub:
         if PID_PATH.exists():
             try:
                 old_pid = int(PID_PATH.read_text().strip())
-                try:
-                    os.kill(old_pid, 0)  # Check if process alive
+                if _pid_is_hub(old_pid):
                     print(f"❌ Nerve Hub already running (PID {old_pid}). Use 'stop' first.")
                     sys.exit(1)
-                except ProcessLookupError:
-                    # Stale PID file — clean it up
-                    PID_PATH.unlink(missing_ok=True)
-                    log_msg(f"Cleaned stale PID file (old PID {old_pid} not running)")
+                # Stale PID file (dead or recycled PID) — clean it up
+                PID_PATH.unlink(missing_ok=True)
+                log_msg(f"Cleaned stale PID file (old PID {old_pid} not a hub)")
             except (ValueError, OSError):
                 PID_PATH.unlink(missing_ok=True)
 
@@ -638,16 +652,12 @@ def get_status() -> dict:
         'feed_size_bytes': 0,
     }
 
-    # Check PID
+    # Check PID (verify it's really a hub — PIDs get recycled)
     if PID_PATH.exists():
         try:
             pid = int(PID_PATH.read_text().strip())
             status['pid'] = pid
-            try:
-                os.kill(pid, 0)
-                status['hub_running'] = True
-            except ProcessLookupError:
-                status['hub_running'] = False
+            status['hub_running'] = _pid_is_hub(pid)
         except (ValueError, OSError):
             pass
 
