@@ -396,6 +396,18 @@ class MorningMirror:
         if not seqs:
             raise ValueError("A mirror line needs at least one citation — no citation, no line.")
 
+        # Roadmap Worlds, Slice 8 — the self/other firewall: the mirror is
+        # my line about my standing, never his biography in my voice.
+        try:
+            from volmarr_world import assert_self_other
+        except ImportError:
+            pass
+        else:
+            try:
+                assert_self_other(line, context="mirror")
+            except AssertionError as exc:
+                raise ValueError(str(exc))
+
         entry = {
             "ts": datetime.fromtimestamp(now, timezone.utc).isoformat(),
             "line": line,

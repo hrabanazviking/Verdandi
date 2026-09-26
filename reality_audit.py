@@ -231,6 +231,32 @@ def check_stored_labels(state_dir: str | None = None,
                                                    f"game:{gid} snapshot",
                                                    world_ids,
                                                    must_be_potential=True)
+    # Slice 8: the model of Volmarr's world. Every claim must be labeled
+    # heimr-volmarr/potential, carry a valid source, and never exceed its
+    # source-warrant ceiling.
+    vw = _read_json(os.path.join(sdir, "volmarr_world.json")) or {}
+    ceilings = {"told": 0.9, "observed": 0.8, "inferred": 0.7,
+                "assumed": 0.4}
+    for subject, claim in (vw.get("claims") or {}).items():
+        where = f"volmarr_world:{subject}"
+        if claim.get("world_id") != "heimr-volmarr":
+            findings.append({"where": where,
+                             "issue": "claim not labeled heimr-volmarr"})
+        if claim.get("reality") != "potential":
+            findings.append({"where": where,
+                             "issue": "claim about his world not tagged "
+                                      "potential — the map is not the territory"})
+        src = claim.get("source")
+        if src not in ceilings:
+            findings.append({"where": where,
+                             "issue": f"unknown source {src!r}"})
+        elif claim.get("confidence", 0) > ceilings[src] + 1e-9:
+            findings.append({"where": where,
+                             "issue": f"confidence {claim.get('confidence')} "
+                                      f"exceeds {src} ceiling {ceilings[src]}"})
+        if not claim.get("provenance"):
+            findings.append({"where": where,
+                             "issue": "claim has no provenance"})
     return findings
 
 

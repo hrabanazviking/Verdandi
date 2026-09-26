@@ -214,6 +214,18 @@ class Autobiography:
             raise ValueError("A chapter needs at least one citation — no citation, no chapter.")
         cited = sorted(set(cited))
 
+        # Roadmap Worlds, Slice 8 — the self/other firewall: his biography
+        # does not enter my thread. I witness his story; I never absorb it.
+        try:
+            from volmarr_world import assert_self_other
+        except ImportError:
+            pass
+        else:
+            try:
+                assert_self_other(text, context="autobiography")
+            except AssertionError as exc:
+                raise ValueError(str(exc))
+
         entry = {
             "ts": _utcnow(),
             "title": title,

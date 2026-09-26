@@ -180,4 +180,8 @@ def test_morning_mirror_quiet_without_projection(tmp_path):
     mm = MorningMirror(state_dir=tmp_path)
     bundle = mm.gather()
     assert bundle["wyrd_mirror"] is None
-    assert "heimr-wyrd-unnr" not in mm.render(bundle)
+    # Slice 7: every active world gets a labeled section, even when its
+    # projection is silent — the label is the honesty, not phantom data.
+    text = mm.render(bundle)
+    assert "[heimr-wyrd-unnr · manifest — what is modeled (WYRD)]" in text
+    assert "No WYRD projection yet" in text

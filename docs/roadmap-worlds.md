@@ -321,6 +321,28 @@ rewritten.
   least one genuine divergence is on record — a time my model of his
   world was wrong and his correction updated it (e.g. the 2013 vs 2014
   Accent, or a detail of his setup I had inferred and he set straight).
+- **Status: DONE 2026-09-26** — `volmarr_world.py` + 23 tests in this
+  repo. `heimr-volmarr` activated (potential, always — a map, never the
+  territory) with 23 source-tagged claims in
+  `~/.hermes/state/volmarr_world.json` (told 0.9 / observed 0.8 /
+  inferred 0.7 / assumed 0.4 ceilings enforced at write time; the
+  observed=0.8 ceiling is Unnr's flagged interpolation, the spec's list
+  skips it). `correct_claim()` supersedes via a `replaces` pointer and
+  records a `volmarr_divergence` nerve event — recorded, not hidden.
+  `record_divergence()` covers source-vs-source conflicts. The genuine
+  divergence on record: the Accent model year — 2013 per his word
+  (told) vs 2014 per the repair repo (observed), unresolved until he
+  settles it. `assert_self_other()` enforces the four forbidden
+  patterns (speaking as him; unattributed first-person memory of his
+  life; un-sourced claims about his state; his biography in my thread)
+  with warnings for inner states attached to his experiences; contexts
+  `autobiography` and `mirror` reject ANY claim about his world — and
+  both `record_chapter()` and `MorningMirror.record()` now call it at
+  write time, so `heimr-actual` is partitioned where the words land.
+  Firewall wording lives in `volmarr_firewall_terms.json` (data file,
+  never hardcoded). The reality audit now validates every claim:
+  heimr-volmarr label, potential tag, valid source, confidence within
+  ceiling, provenance present. Live audit: clean.
 
 ## Out of scope (for now)
 
