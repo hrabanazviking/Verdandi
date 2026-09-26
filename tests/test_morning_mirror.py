@@ -160,3 +160,139 @@ def test_render_is_honest_about_thin_thread(tmp_state, live_nerve):
     text = MorningMirror().render()
     assert "thin" in text
     assert "No citation, no line." in text
+
+
+# --- Slice 7: the mirror reads the worlds ---------------------------------
+
+class _StubWorld:
+    def __init__(self, world_id, kind, reality, status="active",
+                 description=""):
+        self.world_id = world_id
+        self.kind = kind
+        self.reality = reality
+        self.status = status
+        self.description = description
+
+
+class _StubRegistry:
+    def __init__(self, worlds):
+        self._w = worlds
+
+    def worlds(self):
+        return self._w
+
+
+def _four_worlds():
+    return [
+        _StubWorld("heimr-actual", "actual", "manifest",
+                   description="the real world"),
+        _StubWorld("heimr-wyrd-unnr", "wyrd", "manifest",
+                   description="WYRD model"),
+        _StubWorld("heimr-ttrpg-frostvaettirheim", "ttrpg", "potential",
+                   description="the table"),
+        _StubWorld("heimr-game-saga-northlands", "game", "potential",
+                   description="play"),
+        _StubWorld("heimr-volmarr", "volmarr", "potential",
+                   description="his world, not mine"),
+    ]
+
+
+@pytest.fixture
+def world_aware(tmp_state, monkeypatch):
+    """Mirror with a stubbed 5-world registry and a stubbed WYRD context."""
+    monkeypatch.setattr(morning_mirror, "_bootstrap_worlds",
+                        lambda: _StubRegistry(_four_worlds()))
+    monkeypatch.setattr(
+        morning_mirror, "_wyrd_mirror_context",
+        lambda path: {"world_id": "heimr-wyrd-unnr", "reality": "manifest",
+                      "belief_count": 77, "anchor_count": 187,
+                      "open_wish_beliefs": [{"subject": "wish:x"}]})
+    monkeypatch.setattr(morning_mirror, "_wyrd_render_context",
+                        lambda ctx: "WYRD mirror (stubbed render)")
+    return MorningMirror(state_dir=str(tmp_state))
+
+
+def test_gather_includes_one_section_per_world(world_aware):
+    worlds = world_aware.gather()["worlds"]
+    ids = [w["world_id"] for w in worlds]
+    assert "heimr-actual" in ids
+    assert "heimr-wyrd-unnr" in ids
+    assert "heimr-ttrpg-frostvaettirheim" in ids
+    assert "heimr-game-saga-northlands" in ids
+    for w in worlds:
+        assert {"world_id", "kind", "reality", "section", "summary"} <= set(w)
+
+
+def test_volmarr_world_never_in_mirror(world_aware):
+    worlds = world_aware.gather()["worlds"]
+    assert all(w["world_id"] != "heimr-volmarr" for w in worlds)
+    assert all(w["kind"] != "volmarr" for w in worlds)
+
+
+def test_sections_carry_correct_reality_tags(world_aware):
+    by_id = {w["world_id"]: w for w in world_aware.gather()["worlds"]}
+    assert by_id["heimr-actual"]["reality"] == "manifest"
+    assert by_id["heimr-actual"]["section"] == "what is true"
+    assert by_id["heimr-wyrd-unnr"]["reality"] == "manifest"
+    assert by_id["heimr-wyrd-unnr"]["section"] == "what is modeled (WYRD)"
+    assert by_id["heimr-ttrpg-frostvaettirheim"]["reality"] == "potential"
+    assert by_id["heimr-ttrpg-frostvaettirheim"]["section"] == "what is story (TTRPG)"
+    assert by_id["heimr-game-saga-northlands"]["reality"] == "potential"
+    assert by_id["heimr-game-saga-northlands"]["section"] == "what is play (games)"
+
+
+def test_ttrpg_section_summarizes_last_turn(world_aware, tmp_state):
+    import json
+    doc = {"campaigns": {"frost": {
+        "name": "Frostvættirheim",
+        "world_id": "heimr-ttrpg-frostvaettirheim",
+        "turns": [{"actor": "Volmarr", "action": "swings his axe",
+                   "outcome": "a clean hit"}]}}}
+    (tmp_state / "ttrpg_campaigns.json").write_text(json.dumps(doc))
+    by_id = {w["world_id"]: w for w in world_aware.gather()["worlds"]}
+    summary = by_id["heimr-ttrpg-frostvaettirheim"]["summary"]
+    assert "Frostvættirheim" in summary
+    assert "swings his axe" in summary
+
+
+def test_game_section_summarizes_snapshot(world_aware, tmp_state):
+    import json
+    doc = {"games": {"heimr-game-saga-northlands": {
+                "game_id": "heimr-game-saga-northlands",
+                "world_id": "heimr-game-saga-northlands",
+                "name": "Saga of the Northlands", "adapter": "manual"}},
+           "snapshots": {"heimr-game-saga-northlands": {
+               "world_id": "heimr-game-saga-northlands",
+               "reality": "potential",
+               "state": {"plays": 589, "likes": 80}}}}
+    (tmp_state / "game_worlds.json").write_text(json.dumps(doc))
+    by_id = {w["world_id"]: w for w in world_aware.gather()["worlds"]}
+    summary = by_id["heimr-game-saga-northlands"]["summary"]
+    assert "Saga of the Northlands" in summary
+    assert "plays=589" in summary
+
+
+def test_record_stamps_worlds(world_aware, live_nerve, nerve_spy):
+    entry = world_aware.record("I know which world I am standing in.", [101])
+    cited = {w["world_id"] for w in entry["worlds"]}
+    assert {"heimr-actual", "heimr-wyrd-unnr",
+            "heimr-ttrpg-frostvaettirheim",
+            "heimr-game-saga-northlands"} <= cited
+    assert "heimr-volmarr" not in cited
+    for w in entry["worlds"]:
+        assert w["reality"] in ("manifest", "potential")
+
+
+def test_render_shows_labeled_worlds(world_aware):
+    text = world_aware.render()
+    assert "[heimr-actual · manifest — what is true]" in text
+    assert "[heimr-wyrd-unnr · manifest — what is modeled (WYRD)]" in text
+    assert "[heimr-ttrpg-frostvaettirheim · potential — what is story (TTRPG)]" in text
+    assert "heimr-volmarr" not in text
+
+
+def test_mirror_degrades_without_registry(tmp_state, monkeypatch, live_nerve):
+    monkeypatch.setattr(morning_mirror, "_bootstrap_worlds", None)
+    m = MorningMirror(state_dir=str(tmp_state))
+    assert m.gather()["worlds"] == []
+    assert "🌍 Worlds" not in m.render()

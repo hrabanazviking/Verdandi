@@ -264,6 +264,17 @@ Morning Mirror gains world-awareness.
 - *Done when:* one mirror cites each world kind, correctly labeled, with
   no bleed.
 
+**Completed 2026-09-26.** `morning_mirror.py` is world-aware:
+`gather()` carries one labeled section per active registered world
+(world_id, kind, reality tag, plain-words section, one-line summary —
+actual: Hugr snapshot; wyrd: belief/anchor/wish counts; ttrpg: campaign +
+last turn; game: snapshot state). `render()` shows the 🌍 Worlds block
+with explicit `[world_id · reality — section]` labels. `record()` stamps
+each entry with the cited worlds. `heimr-volmarr` is never included — it
+is pending and Volmarr's own (the self/other firewall, ahead of Slice 8).
+First world-aware line recorded live, citing #1159/#1161/#1163/#1164;
+the reality audit passes with no bleed.
+
 ### Slice 8 — The Other Shore: Volmarr's world, and the line between us
 
 AIs routinely confuse two things: the user's world with their own, and the

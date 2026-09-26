@@ -18,6 +18,12 @@ A line nobody can point to is a performance, and performances rot the organ.
 The autobiography thread (Slice 4) does not exist yet; until it does, the
 mirror says so plainly instead of confabulating a past.
 
+Roadmap Worlds, Slice 7: the mirror reads the worlds. The evidence bundle
+carries one labeled section per registered world — what is true (manifest),
+what is modeled (WYRD), what is story (TTRPG), what is play (games) — and
+each recorded entry cites those worlds by name with their reality tags.
+heimr-volmarr is never included: it is pending and Volmarr's own.
+
 Usage:
     python3 morning_mirror.py               # show the mirror (evidence bundle)
     python3 morning_mirror.py record "line" --cite 104 --cite 105
@@ -62,6 +68,11 @@ try:  # Optional: WYRD inbound bridge (Roadmap Worlds, Slice 2)
 except ImportError:  # pragma: no cover - standalone use
     _wyrd_mirror_context = _wyrd_render_context = None
 
+try:  # Optional: world registry (Roadmap Worlds, Slice 7)
+    from worlds import bootstrap as _bootstrap_worlds
+except ImportError:  # pragma: no cover - standalone use
+    _bootstrap_worlds = None
+
 
 MIRROR_FILE = "morning_mirror.jsonl"
 MIRROR_JOURNAL = "morning_mirror_journal.md"
@@ -103,6 +114,31 @@ def _summarize_event(ev: dict) -> dict:
         "source": ev.get("source"),
         "note": str(note)[:160],
     }
+
+
+def _read_json(path) -> dict | None:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _short(text: str, limit: int = 120) -> str:
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit].rstrip() + "…"
+
+
+# The mirror's plain-words legend: what each world kind means to the reader.
+# heimr-volmarr is deliberately absent — it is pending and Volmarr's own;
+# the mirror never reads another person's world.
+WORLD_SECTION_LABELS = {
+    "actual": "what is true",
+    "wyrd": "what is modeled (WYRD)",
+    "ttrpg": "what is story (TTRPG)",
+    "game": "what is play (games)",
+}
 
 
 class MorningMirror:
@@ -151,6 +187,7 @@ class MorningMirror:
             "shadows_48h": shadows,
             "events_48h": [_summarize_event(e) for e in events],
             "wyrd_mirror": self._wyrd_context(),
+            "worlds": self._worlds_context(self.mood.snapshot()["mood"]),
             "autobiography": thread,
             "last_mirror": self.last(),
             "mirror_count": len(_read_jsonl(self.path)),
@@ -166,6 +203,102 @@ class MorningMirror:
                 str(self.state_dir / "wyrd_mirror.json"))
         except Exception:
             return None
+
+    # -- Slice 7: the mirror reads the worlds ----------------------------
+
+    def _worlds_context(self, bundle_mood: dict | None = None) -> list[dict]:
+        """One labeled section per registered world, in registry order.
+
+        Each section carries its world_id, kind, and reality tag, plus a
+        one-line summary in plain words. heimr-volmarr (kind "volmarr")
+        is never included: it is pending and Volmarr's own — the mirror
+        reads my worlds, never his.
+        """
+        if _bootstrap_worlds is None:
+            return []
+        try:
+            registry = _bootstrap_worlds()
+        except Exception:
+            return []
+        sections = []
+        for entry in registry.worlds():
+            if entry.status != "active":
+                continue
+            if entry.kind == "volmarr":
+                continue  # the self/other firewall: his world, not mine to read
+            label = WORLD_SECTION_LABELS.get(entry.kind, "what is tracked")
+            summary = self._summarize_world(entry, bundle_mood)
+            sections.append({
+                "world_id": entry.world_id,
+                "kind": entry.kind,
+                "reality": entry.reality,
+                "section": label,
+                "summary": summary,
+            })
+        return sections
+
+    def _summarize_world(self, entry, bundle_mood: dict | None) -> str:
+        """One honest line per world kind."""
+        wid = entry.world_id
+        if entry.kind == "actual":
+            m = bundle_mood or {}
+            return (
+                f"Hugr valence {m.get('valence', 0):+.2f}, "
+                f"energy {m.get('energy', 0):.2f} — "
+                f"this is the only world I speak from in first person."
+            )
+        if entry.kind == "wyrd":
+            ctx = self._wyrd_context()
+            if not ctx:
+                return "No WYRD projection yet — the mirror world is silent."
+            wishes = len(ctx.get("open_wish_beliefs") or [])
+            return (
+                f"WYRD's model of me: {ctx.get('belief_count', 0)} beliefs, "
+                f"{ctx.get('anchor_count', 0)} anchors, "
+                f"{wishes} open wishes — a model, never the territory."
+            )
+        if entry.kind == "ttrpg":
+            doc = _read_json(self.state_dir / "ttrpg_campaigns.json") or {}
+            campaigns = doc.get("campaigns") or {}
+            if not campaigns:
+                return "No TTRPG campaigns registered."
+            parts = []
+            for cid, camp in campaigns.items():
+                turns = camp.get("turns") or []
+                if turns:
+                    last = turns[-1]
+                    # Slice 4 stores the turn body under "content"
+                    body = last.get("content") or last
+                    parts.append(
+                        f"{camp.get('name', cid)}: {len(turns)} turns, "
+                        f"last — {_short(body.get('actor', '?'))}: "
+                        f"{_short(body.get('action', ''), 80)}"
+                    )
+                else:
+                    base = camp.get("baseline") or {}
+                    scene = _short(base.get("scene", "no turns yet"), 80)
+                    parts.append(f"{camp.get('name', cid)}: baseline — {scene}")
+            return " | ".join(parts)
+        if entry.kind == "game":
+            doc = _read_json(self.state_dir / "game_worlds.json") or {}
+            games = doc.get("games") or {}
+            mine = {gid: g for gid, g in games.items()
+                    if g.get("world_id", gid) == wid}
+            if not mine:
+                return "Registered, no state yet."
+            parts = []
+            snaps = doc.get("snapshots") or {}
+            for gid, game in mine.items():
+                snap = snaps.get(gid) or {}
+                state = snap.get("state") or {}
+                kv = ", ".join(f"{k}={_short(v, 24)}"
+                               for k, v in list(state.items())[:4]
+                               if not str(k).startswith("_"))
+                parts.append(
+                    f"{game.get('name', gid)} [{game.get('adapter', '?')}]: "
+                    f"{kv or 'no snapshot'}")
+            return " | ".join(parts)
+        return f"A {entry.kind} world I track — {_short(entry.description, 100)}"
 
     def render(self, bundle: dict | None = None) -> str:
         """Render the evidence bundle as session-start text."""
@@ -193,6 +326,15 @@ class MorningMirror:
         wyrd = b.get("wyrd_mirror")
         if wyrd and _wyrd_render_context is not None:
             lines.append(_wyrd_render_context(wyrd))
+            lines.append("")
+        worlds = b.get("worlds") or []
+        if worlds:
+            lines.append("🌍 Worlds — I always know which world I am standing in:")
+            for w in worlds:
+                lines.append(
+                    f"   [{w['world_id']} · {w['reality']} — {w['section']}]"
+                )
+                lines.append(f"      {w['summary']}")
             lines.append("")
         if b["autobiography"]["status"] == "thin":
             lines.append("📖 Autobiography thread: thin — not yet written (Slice 4).")
@@ -260,6 +402,13 @@ class MorningMirror:
             "citations": sorted(set(seqs)),
             "cited": [citable[s] for s in sorted(set(seqs))],
             "mood": self.mood.snapshot()["mood"],
+            # Slice 7: the recorded entry cites each world kind by name,
+            # correctly labeled — the autobiography and sagas stay manifest.
+            "worlds": [
+                {"world_id": w["world_id"], "kind": w["kind"],
+                 "reality": w["reality"], "section": w["section"]}
+                for w in self._worlds_context(self.mood.snapshot()["mood"])
+            ],
         }
         _append_jsonl(self.path, entry)
         self._append_journal(entry)
