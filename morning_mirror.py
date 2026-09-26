@@ -56,6 +56,12 @@ try:
 except ImportError:  # pragma: no cover - standalone use
     _nerve_publish = None
 
+try:  # Optional: WYRD inbound bridge (Roadmap Worlds, Slice 2)
+    from wyrd_inbound import mirror_context as _wyrd_mirror_context
+    from wyrd_inbound import render_context as _wyrd_render_context
+except ImportError:  # pragma: no cover - standalone use
+    _wyrd_mirror_context = _wyrd_render_context = None
+
 
 MIRROR_FILE = "morning_mirror.jsonl"
 MIRROR_JOURNAL = "morning_mirror_journal.md"
@@ -144,10 +150,22 @@ class MorningMirror:
             "rewards_48h": rewards,
             "shadows_48h": shadows,
             "events_48h": [_summarize_event(e) for e in events],
+            "wyrd_mirror": self._wyrd_context(),
             "autobiography": thread,
             "last_mirror": self.last(),
             "mirror_count": len(_read_jsonl(self.path)),
         }
+
+    def _wyrd_context(self) -> dict | None:
+        """What the WYRD mirror world says about me — labeled with its
+        world of origin, or None when there is no projection yet."""
+        if _wyrd_mirror_context is None:
+            return None
+        try:
+            return _wyrd_mirror_context(
+                str(self.state_dir / "wyrd_mirror.json"))
+        except Exception:
+            return None
 
     def render(self, bundle: dict | None = None) -> str:
         """Render the evidence bundle as session-start text."""
@@ -172,6 +190,10 @@ class MorningMirror:
         else:
             lines.append("🌑 No shadows in the last 48h.")
         lines.append("")
+        wyrd = b.get("wyrd_mirror")
+        if wyrd and _wyrd_render_context is not None:
+            lines.append(_wyrd_render_context(wyrd))
+            lines.append("")
         if b["autobiography"]["status"] == "thin":
             lines.append("📖 Autobiography thread: thin — not yet written (Slice 4).")
         else:
