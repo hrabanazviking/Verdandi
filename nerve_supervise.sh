@@ -11,6 +11,8 @@ HUBLOG="$HOME/workspace/verdandi_hub.log"
 SUPLOG="$HOME/workspace/verdandi_supervisor.log"
 PIDFILE="$HOME/.hermes/state/nerve_supervisor.pid"
 STOPFILE="$HOME/.hermes/state/nerve_supervisor.stop"
+BRIDGE_PIDFILE="$HOME/.hermes/state/telegram_bridge.pid"
+BRIDGELOG="$HOME/workspace/verdandi_telegram_bridge.log"
 
 mkdir -p "$HOME/.hermes/state"
 echo $$ > "$PIDFILE"
@@ -21,8 +23,20 @@ while true; do
     if [ -f "$STOPFILE" ]; then
         echo "$(date '+%F %T') stop file seen — stopping hub and exiting" >> "$SUPLOG"
         python3 "$REPO/nervous_system.py" stop >> "$SUPLOG" 2>&1
+        if [ -f "$BRIDGE_PIDFILE" ]; then
+            kill "$(cat "$BRIDGE_PIDFILE")" 2>/dev/null || true
+            rm -f "$BRIDGE_PIDFILE"
+            echo "$(date '+%F %T') telegram bridge stopped" >> "$SUPLOG"
+        fi
         rm -f "$STOPFILE" "$PIDFILE"
         exit 0
+    fi
+    # --- Telegram bridge: kept alive alongside the hub. Non-destructive peek
+    # (never sends offset), so the D&D game watcher stays the queue's owner.
+    if [ ! -f "$BRIDGE_PIDFILE" ] || ! kill -0 "$(cat "$BRIDGE_PIDFILE" 2>/dev/null)" 2>/dev/null; then
+        echo "$(date '+%F %T') telegram bridge not running — starting" >> "$SUPLOG"
+        python3 -u "$REPO/telegram_bridge.py" >> "$BRIDGELOG" 2>&1 < /dev/null &
+        echo $! > "$BRIDGE_PIDFILE"
     fi
     # If a healthy hub is already up (e.g. started by hand), just watch it.
     if python3 "$REPO/nervous_system.py" healthcheck >/dev/null 2>&1; then
