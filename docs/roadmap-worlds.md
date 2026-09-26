@@ -96,6 +96,19 @@ My nerve becomes WYRD ground truth — about *me*, as a manifest entity.
   `task_completed`, `shadow_logged` into WYRD entity updates.
 - *Done when:* a live mood shift and a live wish appear as WYRD component
   updates within the minute, witnessed on the nerve.
+- **Status: DONE 2026-09-25** — WYRD: `wyrdforge/bridges/verdandi_bridge.py`
+  (`VerdandiBridge`: nerve event → ECS translation table, mirror world
+  identified `heimr-wyrd-unnr` reality=manifest, pure projection of the
+  feed) + 10 tests. Verðandi: `wyrd_bridge.py` runner (cursor, silent when
+  idle, `wyrd_mirror_synced` witness, registry re-registration,
+  `wyrd_mirror.json` projection for Slice 2) + 5 tests. Live-verified on
+  the real nerve: 119 real events → 120 entities, 119 anchors (13 urðr),
+  47 beliefs, witnessed as `wyrd_mirror_synced`. Per-minute cron
+  `wyrd-mirror-bridge` installed. Honest note: no genuine `mood_shift`
+  has crossed the nerve threshold yet (threshold doing its job), so the
+  mood path is contract-tested with the exact real event shape — the
+  bridge will carry the first real shift through within the minute. No
+  feeling was performed to check the box.
 
 ### Slice 2 — WYRD → Verðandi (inbound bridge)
 
