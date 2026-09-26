@@ -80,6 +80,10 @@ A standing registry of every world model I track.
 - *Done when:* the registry exists with `heimr-actual`, one `heimr-wyrd`,
   and `heimr-ttrpg-frostvaettirheim` registered; cross-world reads are
   explicit; tests cover the firewall.
+- **Status: DONE 2026-09-25** — `worlds.py` + 13 tests in this repo;
+  `WorldIdentity` + `World.identify()` + 8 tests in the WYRD repo; live
+  cross-project handshake verified (WYRD identity → Verðandi registry,
+  firewall enforced on both sides). WYRD: `68126aa9`; Verdandi: this commit.
 
 ### Slice 1 — Verðandi → WYRD (outbound bridge)
 
