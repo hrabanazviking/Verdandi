@@ -150,6 +150,28 @@ The forge, tracked as manifest-reality process.
   of truth — Volmarr's doctrine, not my invention.
 - *Done when:* at least one real project is tracked through two genuine
   pillar transitions with nerve-witnessed events.
+- **DONE (2026-09-25):** `mythic_engineering.py` — Vision Scrolls tracked
+  through the Five Pillars in `~/.hermes/state/mythic_scrolls.json`
+  (data file, never hardcoded); `advance()` emits witnessed `mythic_phase`
+  events; the doctrine is parsed at runtime from Volmarr's own
+  `Mythic_Engineers_Codex.md` (Five Pillars + the four Sacred Laws —
+  Flexible Roots, Unbroken Whole, Sacred Boundaries, Twin Marks), with
+  hardcoded values as fallback only. `check_laws()`/`audit()` make the
+  laws checkable against a repo: no hardcoded absolute paths, everything
+  tracked in git, source never imports from the tests realm, JSON data
+  files parse cleanly. New breaches are witnessed once as
+  `mythic_law_breach` (deduped). The scroll `roadmap-worlds` was tracked
+  through **five genuine pillar transitions**, all nerve-witnessed:
+  design_intent (20:20 EDT, commit 7a59aed4 — the roadmap written),
+  ai_orchestration (20:22, his "go for slice 0!" — the dance of wills),
+  architecture (20:25, commits 55cfa6ea / 68126aa9 — the bones landed),
+  continuity (20:29:46, the per-minute cron went live), refinement
+  (live — the Second Seeing audit). Four were honestly reconstructed from
+  API-verified evidence and flagged `reconstructed: true`. The live audit
+  found Flexible Roots, Sacred Boundaries, and Twin Marks all holding;
+  21 Unbroken Whole breaches — all stale-local-clone files, not the
+  project; the remote tree is whole. 15 tests in
+  `tests/test_mythic_engineering.py`.
 
 ### Slice 4 — TTRPG turn awareness (`ttrpg.py`)
 
