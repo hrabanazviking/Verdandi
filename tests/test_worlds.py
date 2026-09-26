@@ -35,7 +35,10 @@ def test_bootstrap_registers_four_worlds_with_correct_realities(tmp_path):
     assert len(reg) == 4
     assert reg.reality_of("heimr-actual") == MANIFEST
     assert reg.reality_of("heimr-volmarr") == POTENTIAL
-    assert reg.reality_of("heimr-wyrd-unnr") == POTENTIAL
+    # Slice 5 correction: heimr-wyrd-unnr is manifest/active — the Slice 1
+    # bridge re-registered it as a real live system at runtime, and the
+    # persisted registry carries that truth. The bootstrap default now matches.
+    assert reg.reality_of("heimr-wyrd-unnr") == MANIFEST
     assert reg.reality_of("heimr-ttrpg-frostvaettirheim") == POTENTIAL
     kinds = {e.world_id: e.kind for e in reg.worlds()}
     assert kinds == {

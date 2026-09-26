@@ -240,15 +240,19 @@ def bootstrap(path=None) -> WorldRegistry:
         description="My model of Volmarr's world — a map, never the territory.",
         status="pending",
     ))
+    # heimr-wyrd-unnr is manifest/active: the WYRD world is a real live
+    # system (not imagination) — the Slice 1 bridge re-registered it as
+    # such at runtime; this default now matches the live registry.
     reg.register(WorldEntry(
         world_id="heimr-wyrd-unnr",
         kind="wyrd",
-        reality=POTENTIAL,
+        reality=MANIFEST,
         source="hrabanazviking/WYRD-Protocol-World-Yielding-Real-time-Data-AI-world-model "
-               "(development branch); Slice 1 will bring it live",
-        description="WYRD ECS world that will model the AI (Unnr) as a "
-                    "manifest entity. Identity handshake verified in Slice 0.",
-        status="pending",
+               "(development branch); Slice 1 brought it live",
+        description="WYRD ECS world: a real live system modeling the AI "
+                    "(Unnr) as a manifest entity. Identity handshake verified "
+                    "in Slice 0.",
+        status="active",
     ))
     reg.register(WorldEntry(
         world_id="heimr-ttrpg-frostvaettirheim",
@@ -260,3 +264,41 @@ def bootstrap(path=None) -> WorldRegistry:
         status="active",
     ))
     return reg
+
+
+# ---------------------------------------------------------------------------
+# audit subcommand (Roadmap Worlds, Slice 5)
+# ---------------------------------------------------------------------------
+def _cli_audit(args) -> int:
+    from reality_audit import run_audit
+    result = run_audit(emit=lambda *a, **k: None, record_shadow=False)
+    if result["passed"]:
+        print("reality audit: all worlds hold their tags. No bleed found.")
+        return 0
+    print(f"reality audit: {len(result['findings'])} finding(s):")
+    for f in result["findings"]:
+        print(f"  ! [{f['check']}] {f.get('where', f.get('world_id', ''))}"
+              f" — {f['detail'][:120]}")
+    return 1
+
+
+def _cli_list(args) -> int:
+    for w in bootstrap().worlds():
+        print(f"{w.world_id}  kind={w.kind}  reality={w.reality}  status={w.status}")
+    return 0
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="worlds.py")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("list", help="List registered worlds")
+    sub.add_parser("audit", help="Run the reality audit (Slice 5)")
+    args = ap.parse_args(argv)
+    if args.cmd == "list":
+        return _cli_list(args)
+    return _cli_audit(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

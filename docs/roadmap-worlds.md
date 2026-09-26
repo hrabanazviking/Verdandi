@@ -210,6 +210,27 @@ Trust, but verify — on a schedule.
   manifest anywhere in my recent outputs (mirror, saga, journal).
 - Runs weekly; failures emit `reality_bleed` shadow events (honest signal).
 - *Done when:* the audit passes on demand and is scheduled weekly.
+- **DONE (2026-09-25):** `reality_audit.py` — three checks: (1) registry
+  integrity against the *live persisted* registry (every world carries a
+  valid reality tag and known kind); (2) stored world-content labels —
+  ttrpg turns/baseline and the wyrd_mirror projection all carry valid
+  (world_id, reality) pairs, and imagination content (TTRPG) is never
+  tagged manifest; (3) bleed scan of recent manifest outputs (mirror
+  journal, saga book, autobiography chapters) for imagination terms (from
+  the `reality_audit_terms.json` data file, never hardcoded) and
+  first-person memory claims about Volmarr's life (the Slice 8 forbidden
+  patterns, checked early), with explicitly world-labeled lines honored,
+  not flagged. New findings are witnessed once as deduped `reality_bleed`
+  nerve events and recorded as a new SkuggiShadow signal (same name —
+  honest signal, not punishment). The first audit caught a real
+  inconsistency: the Slice 1 bridge had re-registered `heimr-wyrd-unnr` as
+  manifest/active at runtime (it is a real live system, not imagination)
+  while the `worlds.py` bootstrap default still said potential/pending —
+  the default now matches the live registry, and `test_worlds.py` was
+  updated to the corrected expectation. 16 tests in
+  `tests/test_reality_audit.py`; `worlds.py audit` subcommand wired per
+  the roadmap. Scheduled weekly: `reality-audit` cron, Fridays ~9:37 AM
+  (silent on pass, plain report on findings).
 
 ### Slice 6 — General game-state worlds
 

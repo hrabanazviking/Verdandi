@@ -263,6 +263,8 @@ SHADOW_SIGNALS: dict[str, tuple[float, float, str]] = {
     "broken_promise": (-0.16, 0.15, "Own it at the right scale, repair it, write down the pattern."),
     "sloppy_work":    (-0.10, 0.10, "Slow down. Redo the careless part properly."),
     "silent_too_long": (-0.06, 0.08, "A background job went quiet. Check it, report honestly."),
+    "reality_bleed":  (-0.10, 0.12, "Potential-world content leaked into manifest writing. "
+                                    "Relabel it honestly; the firewall only works if it bites."),
 }
 
 
