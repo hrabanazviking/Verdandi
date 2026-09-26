@@ -155,3 +155,45 @@ def test_terms_seeded_as_data(sdir):
     terms = ra.load_terms(sdir)
     assert "heimr-ttrpg-frostvaettirheim" in terms
     assert os.path.exists(os.path.join(sdir, "reality_audit_terms.json"))
+
+
+# -- game worlds (Slice 6: same firewall) ----------------------------------
+def _game_registry(tmp_path):
+    reg = bootstrap(path=str(tmp_path / "w.json"))
+    reg.register(WorldEntry(world_id="heimr-game-test", kind="game",
+                            reality="potential", source="t", description="t"))
+    return reg
+
+
+def _games_doc(entries, snapshots=None):
+    return {"games": {"heimr-game-test": {
+                "game_id": "heimr-game-test", "log": entries,
+                "world_id": "heimr-game-test", "reality": "potential"}},
+            "snapshots": snapshots or {}}
+
+
+def test_game_log_potential_passes(sdir, tmp_path):
+    doc = _games_doc(
+        [{"world_id": "heimr-game-test", "reality": "potential",
+          "note": "session 1"}],
+        {"heimr-game-test": {"world_id": "heimr-game-test",
+                             "reality": "potential", "state": {"score": 1}}})
+    _write(os.path.join(sdir, "game_worlds.json"), json.dumps(doc))
+    assert ra.check_stored_labels(sdir, _game_registry(tmp_path)) == []
+
+
+def test_game_entry_tagged_manifest_is_bleed(sdir, tmp_path):
+    doc = _games_doc([{"world_id": "heimr-game-test", "reality": "manifest",
+                       "note": "session 1"}])
+    _write(os.path.join(sdir, "game_worlds.json"), json.dumps(doc))
+    findings = ra.check_stored_labels(sdir, _game_registry(tmp_path))
+    assert len(findings) == 1
+    assert "manifest" in findings[0]["detail"]
+
+
+def test_game_entry_unknown_world_flagged(sdir, tmp_path):
+    doc = _games_doc([{"world_id": "heimr-game-ghost", "reality": "potential",
+                       "note": "x"}])
+    _write(os.path.join(sdir, "game_worlds.json"), json.dumps(doc))
+    findings = ra.check_stored_labels(sdir, _game_registry(tmp_path))
+    assert any("unknown world" in f["detail"] for f in findings)

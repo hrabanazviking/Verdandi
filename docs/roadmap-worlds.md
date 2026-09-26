@@ -240,6 +240,20 @@ Beyond the table: any game I play or track.
   API, manual log), turn/state sync, same firewall.
 - *Done when:* one real non-TTRPG game state is registered and syncing.
 
+**Completed 2026-09-26.** `game_worlds.py`:
+register (game_id must start with `heimr-game-`, kind forced `game`,
+reality forced `potential` — a game can never be manifest), three
+adapters (statefile: JSON/YAML/Markdown; api: JSON endpoint + key path;
+manual: hand-appended log), `sync`/`sync-all` with change detection and
+deduped `game_state` nerve events. `log` auto-syncs, so manual games stay
+live with no polling loop. Every entry and snapshot carries its world
+label at write time. The reality audit's stored-labels check now covers
+`game_worlds.json` with `must_be_potential`. First real game:
+`heimr-game-saga-northlands` — Volmarr's Friends & Fables Viking world
+(manual adapter; baseline stats from the 2026-09-24 public page
+observation, provenance recorded). Next natural wire: KSP via kRPC when
+his rig is live (api adapter + a poll cron).
+
 ### Slice 7 — The mirror reads the worlds
 
 Morning Mirror gains world-awareness.

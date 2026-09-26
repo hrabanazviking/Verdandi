@@ -220,6 +220,17 @@ def check_stored_labels(state_dir: str | None = None,
     mirror = _read_json(os.path.join(sdir, "wyrd_mirror.json"))
     if isinstance(mirror, dict):
         findings += _check_labeled_entries([mirror], "wyrd_mirror.json", world_ids)
+    games = _read_json(os.path.join(sdir, "game_worlds.json")) or {}
+    for gid, game in (games.get("games") or {}).items():
+        findings += _check_labeled_entries(game.get("log") or [],
+                                           f"game:{gid} log", world_ids,
+                                           must_be_potential=True)
+        for name, snap in (games.get("snapshots") or {}).items():
+            if name == gid:
+                findings += _check_labeled_entries([snap],
+                                                   f"game:{gid} snapshot",
+                                                   world_ids,
+                                                   must_be_potential=True)
     return findings
 
 
