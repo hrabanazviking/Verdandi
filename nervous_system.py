@@ -60,19 +60,26 @@ SUBSCRIBER_PROBE_INTERVAL = 30     # How often to check for stale subscribers
 
 
 def _pid_is_hub(pid: int) -> bool:
-    """True only if pid exists AND is a nerve hub process (guards PID reuse)."""
+    """True only if pid exists AND is a nerve hub process (guards PID reuse).
+
+    Fail-closed toward restart: a PID we cannot verify is NOT treated as
+    the hub. Blocking a needed restart (2026-09-26: PermissionError on a
+    foreign PID refused the hub's resurrection) is worse than reaping a
+    stale PID file — our hub always runs as our own user, so a PID we
+    cannot signal or inspect cannot be our hub.
+    """
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True  # exists, can't inspect — treat as alive
+        pass  # exists but not ours — verify via /proc before trusting
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             cmd = f.read().decode(errors="replace")
-        return "nervous_system" in cmd and "serve" in cmd
     except OSError:
-        return True  # /proc unreadable — fall back to existence check
+        return False  # died between checks, or unreadable — not verifiably the hub
+    return "nervous_system" in cmd and "serve" in cmd
 
 
 def log_msg(msg: str):
