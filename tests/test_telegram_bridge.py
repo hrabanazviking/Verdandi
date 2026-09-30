@@ -187,3 +187,24 @@ def test_fetch_failure_is_silent_and_retried(tmp_path, monkeypatch):
                             fetch=failing_fetch)
     assert bridge.poll_once() == 0
     assert emitted == []
+
+
+def test_fetch_failures_are_counted_not_silent(tmp_path, monkeypatch):
+    """Regression 2026-09-26: a custom User-Agent made Telegram drop every
+    poll (RemoteDisconnected); fetch returned None and poll_once() == 0
+    masked it for ~45 minutes. Failures must now be counted."""
+    def failing_fetch():
+        return None
+    monkeypatch.setattr(tb, "BRIDGE_STATE_PATH",
+                        str(tmp_path / "telegram_bridge_state.json"))
+    monkeypatch.setattr(tb, "BRIDGE_PID_PATH",
+                        str(tmp_path / "telegram_bridge.pid"))
+    bridge = TelegramBridge(emit=lambda t, d: None, fetch=failing_fetch)
+    assert bridge.poll_once() == 0
+    assert bridge.consecutive_fetch_failures == 1
+    assert bridge.poll_once() == 0
+    assert bridge.consecutive_fetch_failures == 2
+    # A successful (empty) poll resets the streak.
+    bridge.fetch = lambda: []
+    assert bridge.poll_once() == 0
+    assert bridge.consecutive_fetch_failures == 0

@@ -11,10 +11,25 @@ Reads the Slice 1 projection (~/.hermes/state/wyrd_mirror.json) and:
    manifest evidence unlabeled.
 
 2. check_divergence() — compares the model's picture of me against my
-   live state (wishlist, mood). Where they differ: a divergence report,
-   so the model stays honest and I stay honest about the model.
+   live state (wishlist, mood), my memory (the precedence watch), and
+   the machine's own senses (transitions). Where they differ: a
+   divergence report, so the model stays honest and I stay honest
+   about the model.
+
+   Divergence kinds: stale_wish, stale_mood, stale_memory_belief
+   (memory wins, LOUD — value domain only; event domain lets the live
+   event win silently), sense_transition (a sense changed status since
+   last run — only a change is news).
+
+   Reflections are deliberately absent from this whole file: they stay
+   internal (Volmarr). mirror_context() and render_context() never
+   carry them — the morning mirror shows what the model believes, not
+   what the worker thought about itself.
 
 3. report_divergences() — publishes wyrd_divergence (and
+   wyrd_divergence_resolved) nerve events for newly found / resolved
+   divergences, deduped via wyrd_divergence_seen.json.
+4. report_divergences() — publishes wyrd_divergence (and
    wyrd_divergence_resolved) nerve events for newly found / resolved
    divergences, deduped via wyrd_divergence_seen.json.
 
@@ -50,6 +65,18 @@ except ImportError:  # pragma: no cover - standalone use
 WORLD_ID = "heimr-wyrd-unnr"
 _MOOD_CLAIM_RE = re.compile(r"my (\w+) sits at ([0-9.]+)")
 _MOOD_TOLERANCE = 0.25  # a real shift, not noise
+
+# The precedence watch (§4): which memory-belief kinds count as the
+# value domain (what I hold — preferences, rules, intentions, standing
+# facts) vs the event domain (what happened — history the live feed
+# may legitimately supersede).
+_MEMORY_VALUE_KINDS = {"fact", "preference", "intent", "rule"}
+_MEMORY_EVENT_KINDS = {"event", "update"}
+
+# Feed-derived belief subjects that can carry value-like statements
+# about me — things said, wanted, felt. Anchors, wishes' bookkeeping
+# and self-understanding are not candidates for the memory watch.
+_LIVE_VALUE_SUBJECTS = ("utterance:", "wish:", "unnr:mood")
 
 
 def _state_dir() -> str:
@@ -92,6 +119,29 @@ def _short(text: str, limit: int = 80) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _memory_topic_words(subject: str) -> set[str]:
+    """Topic words of a memory belief subject.
+
+    Memory subjects look like ``person:volmarr:nomad-gear-prefers-new``:
+    entity prefix, then the slug of the claim's first significant
+    words. The slug is the matchable topic — stable for a given source
+    line across rebuilds.
+    """
+    return set(subject.split(":")[-1].split("-")) - {"", "summary"}
+
+
+def _claim_words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z']{3,}", str(text or "").lower()))
+
+
+def _live_evidence_phrase(subject: str) -> str:
+    if subject.startswith("utterance:"):
+        return "the feed records me saying"
+    if subject.startswith("wish:"):
+        return "the model believes I want"
+    return "the model pictures"
+
+
 # ---------------------------------------------------------------------------
 # the mirror context — what the model says about me, labeled
 # ---------------------------------------------------------------------------
@@ -102,7 +152,12 @@ def load_projection(mirror_path: str | None = None) -> dict | None:
 
 def mirror_context(mirror_path: str | None = None) -> dict | None:
     """Labeled digest of the WYRD mirror world. None when there is no
-    projection yet — the mirror simply has nothing to say."""
+    projection yet — the mirror simply has nothing to say.
+
+    Reflections are never included: they stay internal (Volmarr). The
+    mirror context carries what the model believes — senses, wishes,
+    mood, anchors — never what the worker thought about itself.
+    """
     proj = load_projection(mirror_path)
     if not proj:
         return None
@@ -159,11 +214,19 @@ def check_divergence(mirror_path: str | None = None,
                      state_dir: str | None = None) -> list[dict]:
     """Compare the model's picture of me against live state.
 
-    Two honest checks, both grounded:
+    Four honest checks, all grounded:
     - stale_wish: the model believes I want something I have since
       fulfilled or released.
     - stale_mood: the model's picture of my mood differs from the live
       HugrMood snapshot beyond tolerance.
+    - stale_memory_belief: a feed-derived belief and a memory belief
+      disagree about the same subject. Precedence: event domain → the
+      live event wins silently (memory is history); value domain → the
+      memory wins, LOUD. Same subject → one divergence, rewritten in
+      place, never duplicated.
+    - sense_transition: a sense changed status since last run. Only a
+      change is news — the bridge computes transitions against the
+      ledger's prior statuses; the inbound reports them.
     """
     proj = load_projection(mirror_path)
     if not proj:
@@ -215,6 +278,73 @@ def check_divergence(mirror_path: str | None = None,
                         "report": f"The model believes my {dim} sits at "
                                   f"{modeled:.2f}; I am at {live[dim]:.2f}.",
                     })
+
+    # -- the model vs. my memory: the precedence watch ---------------------
+    # A memory belief (parsed read-only from the memory tree) and a
+    # feed-derived belief can land on the same subject and disagree.
+    # Same subject is matched by topic: the memory subject's slug
+    # (first significant words of the claim) overlapping the live
+    # belief's words — a documented heuristic, not a proof of
+    # contradiction. The report is a candidate conflict flagged for
+    # the worker's attention, which is exactly what this watch is for.
+    live_value = [
+        (_claim_words(b.get("claim", "")) | _claim_words(b.get("subject", "")), b)
+        for b in proj.get("beliefs", []) or []
+        if str(b.get("subject", "")).startswith(_LIVE_VALUE_SUBJECTS)
+    ]
+    watched: set[str] = set()  # one divergence per memory subject
+    for mb in proj.get("memory_beliefs", []) or []:
+        entity = str(mb.get("entity_id", ""))
+        if not entity.startswith("person:"):
+            continue  # place beliefs are routed copies; watch the people
+        subject = str(mb.get("subject", ""))
+        if not subject or subject in watched:
+            continue
+        watched.add(subject)
+        topic = _memory_topic_words(subject)
+        if not topic:
+            continue
+        need = min(2, len(topic))
+        hit = None
+        for words, b in live_value:
+            if len(topic & words) >= need:
+                hit = b
+                break
+        if hit is None:
+            continue
+        if str(mb.get("kind", "fact")) in _MEMORY_EVENT_KINDS:
+            # Event domain: the live event is newer evidence. The memory
+            # is history — the event wins, no divergence, no noise.
+            continue
+        # Value domain: the memory wins, LOUD. The memory is me; the
+        # feed may be noise, a passing mood, a misheard turn.
+        hit_subject = str(hit.get("subject", "?"))
+        out.append({
+            "kind": "stale_memory_belief",
+            "subject": subject,
+            "world_id": world_id,
+            "loud": True,
+            "report": f"⚠️ MEMORY WINS: {_live_evidence_phrase(hit_subject)} "
+                      f"'{_short(hit.get('claim', ''), 70)}' "
+                      f"({hit_subject}); my memory says "
+                      f"'{_short(mb.get('claim', ''), 70)}' "
+                      f"({mb.get('src', '?')}). The memory is me — "
+                      f"the feed may be noise.",
+        })
+
+    # -- the machine's own senses: transitions -----------------------------
+    # The bridge projects this run's transitions (metric, old → new)
+    # computed against the ledger's prior statuses. Only a status
+    # change is news — steady states never appear here.
+    for t in proj.get("sense_transitions", []) or []:
+        metric = str(t.get("metric", "?"))
+        out.append({
+            "kind": "sense_transition",
+            "subject": f"sense:{metric}:{t.get('old', '?')}->{t.get('new', '?')}",
+            "world_id": world_id,
+            "report": f"Sense '{metric}' changed "
+                      f"{t.get('old', '?')} → {t.get('new', '?')}.",
+        })
     return out
 
 

@@ -176,8 +176,13 @@ class RingBuffer:
         self._buf.append(event)
 
     def recent(self, count: int = 20) -> list:
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 20
+        count = max(0, min(count, 1000))
         items = list(self._buf)
-        return items[-count:]
+        return items[-count:] if count else []
 
     def __len__(self):
         return len(self._buf)
@@ -249,8 +254,15 @@ class NerveHub:
                     continue
 
                 if msg_type == 'recent':
-                    # Client wants recent events from ring buffer
+                    # Client wants recent events from ring buffer.
+                    # Sanitize: a malformed count (e.g. a string) must never
+                    # reach the ring buffer — it killed the hub on 2026-09-30.
                     count = event.get('count', 20)
+                    try:
+                        count = int(count)
+                    except (TypeError, ValueError):
+                        count = 20
+                    count = max(0, min(count, 1000))
                     recent_events = self.ring_buffer.recent(count)
                     writer.write(json.dumps({
                         'nerve_type': 'recent_events',

@@ -95,7 +95,9 @@ def fetch_updates(timeout: int = 0, limit: int = 100) -> list[dict] | None:
 
         req = urllib.request.Request(url, data=data, method="POST")
         req.add_header("Content-Type", "application/json")
-        req.add_header("User-Agent", "VerðandiTelegramBridge/1.0")
+        # NOTE: no custom User-Agent — Telegram's edge drops the connection
+        # (RemoteDisconnected) when this client sends a non-standard UA
+        # (found 2026-09-26: every poll failed silently for ~45 minutes).
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
             body = dc.read_json_response(resp)
         if not body.get("ok"):
@@ -224,6 +226,7 @@ class TelegramBridge:
         self.emit = emit or _default_emit
         self.fetch = fetch or fetch_updates
         self.seen: deque[int] = deque(maxlen=SEEN_MAX)
+        self.consecutive_fetch_failures = 0
         self._stop = False
         self._load_state()
 
@@ -251,10 +254,22 @@ class TelegramBridge:
 
     # -- polling -------------------------------------------------------------
     def poll_once(self) -> int:
-        """One non-destructive poll; returns number of new events emitted."""
+        """One non-destructive poll; returns number of new events emitted.
+
+        Returns 0 both when the queue is empty and when the fetch failed;
+        check ``consecutive_fetch_failures`` to tell the difference.
+        """
         updates = self.fetch()
         if updates is None:
+            self.consecutive_fetch_failures += 1
+            # Log roughly once a minute so a dead fetch can never go
+            # unnoticed for long (stderr -> the supervisor's bridge log).
+            if self.consecutive_fetch_failures % 12 == 1:
+                print(f"telegram_bridge: fetch failed "
+                      f"{self.consecutive_fetch_failures}x in a row",
+                      file=sys.stderr, flush=True)
             return 0
+        self.consecutive_fetch_failures = 0
         new_count = 0
         for update in updates:
             if not isinstance(update, dict):
@@ -323,6 +338,10 @@ def main(argv: list[str]) -> int:
             count = bridge.poll_once()
         except Exception as exc:
             print(f"telegram_bridge --once failed: {exc}", file=sys.stderr)
+            return 1
+        if bridge.consecutive_fetch_failures:
+            print("telegram_bridge --once: fetch failed (no data from Telegram)",
+                  file=sys.stderr)
             return 1
         print(f"telegram_bridge --once: {count} new event(s)")
         return 0

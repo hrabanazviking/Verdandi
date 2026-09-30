@@ -6,6 +6,7 @@ silent when nothing is new, and witnesses real syncs on the nerve.
 import json
 import os
 import sys
+import time
 
 import pytest
 
@@ -21,19 +22,30 @@ from wyrd_bridge import run
 
 
 def _write_feed(path, entries):
+    now = time.time()
     with open(path, "w", encoding="utf-8") as fh:
         for i, (etype, data) in enumerate(entries, start=1):
             fh.write(json.dumps({"type": etype, "data": data,
-                                 "_seq": i, "_ts": 1790381094.0 + i}) + "\n")
+                                 "_seq": i, "_ts": now + i}) + "\n")
 
 
 @pytest.fixture
 def paths(tmp_path):
+    # Scratch everything the Wave B attach phase can touch: the ledger,
+    # the memory home, and the hermes state dir. Tests never reach live
+    # state — no memory reads, no ledger writes outside tmp_path.
+    state_dir = tmp_path / "state"
+    home_dir = tmp_path / "home"
+    state_dir.mkdir()
+    home_dir.mkdir()
     return {
         "feed_path": str(tmp_path / "nerve_feed.jsonl"),
         "cursor_path": str(tmp_path / "cursor.json"),
         "mirror_path": str(tmp_path / "wyrd_mirror.json"),
         "registry_path": str(tmp_path / "registry.json"),
+        "ledger_path": str(state_dir / "wyrd_entity_ledger.json"),
+        "home": str(home_dir),
+        "state_dir": str(state_dir),
     }
 
 
