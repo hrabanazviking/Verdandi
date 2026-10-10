@@ -1,5 +1,89 @@
 # DEVLOG — Verðandi
 
+## 2026-10-10 — Forge run verdandi-dusk-forge (16:32 EDT) — "The Kept Oath"
+
+Second forge run. Theme: the system's inner promises kept true. Dawn run
+hardened the outer nerve (hub, bridges, env-decoupled tests); dusk run
+audits the inner organs — memory, judgment, healing, prediction, truth —
+with 23 bugs confirmed by reproduction, consolidated by Sólrún to 20 slices.
+
+Baseline: 889 passed / 4 skipped / 0 failed.
+
+### Heartbeat honesty (slices 1–8)
+- `heartbeat/actions/eir_action.py`: `_heal_database` DESTROYED the DB it
+  "healed" — never ATTACHed the backup, swallowed OperationalError, committed
+  an empty DB, deleted the backup, returned True. Rewritten: ATTACH backup,
+  copy DDL + rows, rebuild indexes, verify integrity_check + per-table row
+  counts; backup kept until verification passes; False + loud ERROR log on
+  any failure.
+- `heartbeat/actions/vor_action.py`: VörAction overrode BaseAction.execute,
+  losing exception guards; the no-action branch referenced nonexistent
+  `ActionSeverity.INFO` → AttributeError killed core.pulse() via
+  Reactor.react. Fixed: renamed to `_execute` (BaseAction guards restored),
+  INFO → SKIPPED, `action_name=` field fixed, isinstance guards on capacity
+  "status"-string entries (dawn :69 fix pattern).
+- `heartbeat/checks/urdr.py`: `_check_systemd` substring `"active" in
+  stdout` matched `Active: inactive (dead)` → dead services reported ACTIVE
+  and Gungnir skipped restarts. Real `Active:` state-word parse now.
+  `_check_cron` dropped @-spec jobs (@reboot/@daily/@hourly); recognized now.
+- `heartbeat/checks/skuld.py`: `_predict_capacity` was permanently dead —
+  read `health.get("disk_used_percent")` on the outer dict while Eir nests
+  metrics under `["health"]["details"]`, and looked for
+  `memory_used_percent` while Eir writes `ram_used_percent`. Both fixed;
+  Vör's pre-emptive healing can now actually trigger.
+- `heartbeat/core.py`: overnight maintenance windows (22:00–02:00) never
+  fired on "HH:MM" string compare — wrap-midnight logic added. Zero enabled
+  checks no longer report perfect health: new `DaemonState.UNKNOWN`,
+  HealthScore returns None / no_checks marker, `last_healthy_pulse` not
+  stamped on empty. Pulse path also feeds circuit-breaker states to the
+  prometheus gauge (S8 hook).
+- `heartbeat/reactor.py`: default DISCIPLINE rule targeted unregistered
+  `discipline_enforcement` — every pulse logged "not found" and skipped.
+  HeimdallAction (the real implementation) now registered under that name.
+- `heartbeat/prometheus.py`: `verdandi_circuit_breaker_state` and
+  `verdandi_prediction_days_to_exhaustion` were registered but never set —
+  both now populated in `update_from_state()`.
+
+### Memory integrity (slices 9–15)
+- `conversation_logger.py`: all 5 current.json write sites now atomic
+  (tmp + fsync + os.replace). Corrupt/truncated/wrong-type current.json is
+  LOUD: stderr warning + backup to `current.json.corrupt.<ts>`, never silent
+  state loss. `cmd_show`/`cmd_recent`/`get_context_for_cron` coerce
+  non-string content instead of crashing. `test_get_current_state_corrupt_file`
+  updated to the new honest contract.
+- `context_injector.py`: repo-local dir now precedes `~/.hermes/state` on
+  sys.path — a deployed conversation_logger copy can no longer shadow the
+  repo file; state dir stays as fallback only.
+- `reactor.py`: naive (tz-less) timestamps assumed UTC instead of killing
+  react() with TypeError; non-dict JSONL lines skipped loudly instead of
+  AttributeError; re-occurring blockers re-activate with a reoccurrence
+  count (regressions visible, not silent); dead `react(focus=...)` / `--focus`
+  flag now genuinely filters (all/blockers/learnings/files/next).
+
+### Truth integrity (slices 16–20)
+- `reality_audit.py`: slice-8 findings now carry the standard
+  `check`/`detail` keys (were crashing `run_audit()` and `worlds audit` with
+  KeyError); one torn autobiography chapter line no longer aborts the whole
+  audit — skipped loudly, counted, scanning continues.
+- `weekly_saga.py`: `gather()` read `autobiography.jsonl` (never exists) —
+  now reads `autobiography_chapters.jsonl`, so the digest sees real chapters.
+- `joy_ledger.py`: non-dict JSONL rows skipped loudly instead of crashing
+  `audit()`/`delights()` with TypeError/AttributeError.
+- `verdandi/eir/layers.py`: `load_profiles_from_yaml` degrades per-layer on
+  malformed config (null mappings, non-dict effort_levels) instead of dying.
+- `shadow_arcs.py`: `arcs(status="reopened")` can never match by status
+  string — now matches arcs with a reopen event in history / reopen_count.
+
+### Incidents
+- None from the external hard-reset actor this run — all worker edits
+  persisted; no re-application needed. (Dawn run saw two resets.)
+- Cross-worker test pollution observed twice in full-suite runs (S2's
+  dry_run=False rule test briefly fired a real disk cleanup; the S6 test
+  rewrite of `test_no_checks_preserves_state`); each was isolated and the
+  final full suite is green. No user data harmed.
+- My own acceptance brief for S3 miscounted expected cron jobs (said 3,
+  correct is 4) — the worker's assertion of 4 was right.
+
 ## 2026-10-10 — Forge run verdandi-dawn-forge (04:32 EDT) — "The Green Forge"
 
 First forge run for this repo. Theme: make the suite truly green in ANY
