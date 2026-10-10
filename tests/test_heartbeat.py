@@ -865,10 +865,20 @@ class TestStateMachineTransitions:
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
 
-    def test_no_checks_preserves_state(self, daemon):
-        """With no checks at all, state should change to RUNNING from INITIALIZING."""
+    def test_no_checks_goes_to_unknown(self, daemon):
+        """With no checks enabled, the daemon cannot claim health — state
+        must be UNKNOWN, not RUNNING (dusk S6: zero checks ≠ perfect health)."""
         daemon.state.state = DaemonState.INITIALIZING
         daemon.state.checks = {}
+        daemon._update_daemon_state()
+        assert daemon.state.state == DaemonState.UNKNOWN
+
+    def test_unknown_daemon_recovers_when_checks_appear(self, daemon):
+        """An UNKNOWN daemon transitions to RUNNING once checks exist and pass."""
+        daemon.state.state = DaemonState.UNKNOWN
+        daemon.state.checks["health"] = CheckResult(
+            name="health", severity=CheckSeverity.OK
+        )
         daemon._update_daemon_state()
         assert daemon.state.state == DaemonState.RUNNING
 
