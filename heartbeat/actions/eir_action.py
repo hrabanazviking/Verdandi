@@ -26,6 +26,11 @@ from heartbeat.checks.base import CheckSeverity
 logger = logging.getLogger("verdandi.heartbeat.actions.eir_action")
 
 
+def _quote_ident(name: str) -> str:
+    """Quote an SQLite identifier so arbitrary table names are safe in SQL."""
+    return '"' + name.replace('"', '""') + '"'
+
+
 @register_action("auto_heal")
 class EirAction(BaseAction):
     """Auto-heal corrupted databases and fix configuration issues.
@@ -129,63 +134,176 @@ class EirAction(BaseAction):
         )
 
     def _heal_database(self, db_path: Path, name: str) -> bool:
-        """Attempt to repair a corrupted SQLite database."""
+        """Attempt to repair a corrupted SQLite database.
+
+        The kept oath: never destroy what we cannot restore.
+
+        Strategy:
+          1. Copy the suspect file to a recovery backup (``<name>.db.recover``).
+             The backup is NOT deleted until the rebuilt database verifies.
+          2. Fast path: if ``PRAGMA integrity_check`` reports "ok", the DB was
+             never corrupt — VACUUM it, discard the backup, return True.
+          3. Otherwise move the corrupted file aside (``<name>.db.corrupt``)
+             for forensics and rebuild a fresh DB by ATTACHing the backup and
+             copying every table's schema and rows across.
+          4. Verify the rebuild: ``integrity_check`` must be "ok" and every
+             restored table must hold exactly as many rows as the backup.
+          5. Only on success is the backup consumed. On ANY failure the backup
+             is kept, the failure is logged loudly, and False is returned —
+             never a True on an empty database.
+        """
+        backup_path = db_path.with_suffix(".db.recover")
+        corrupted_path = db_path.with_suffix(".db.corrupt")
+
         if not db_path.exists():
             logger.warning(f"Database {name} not found at {db_path}")
             return False
 
+        # Step 1: take a recovery backup that we refuse to lose.
         try:
-            # First, try to recover what we can
-            backup_path = db_path.with_suffix(".db.recover")
-            corrupted_path = db_path.with_suffix(".db.corrupt")
-
-            # Step 1: Create a backup
             shutil.copy2(str(db_path), str(backup_path))
+        except OSError as e:
+            logger.error(
+                "Eir auto-heal FAILURE [%s]: cannot create recovery backup of %s: %s. "
+                "Refusing to touch the database.",
+                name, db_path, e,
+            )
+            return False
 
-            # Step 2: Try to verify and optimize with context manager
+        # Step 2: fast path — the DB may not be corrupt at all.
+        try:
             with sqlite3.connect(str(db_path)) as conn:
-                try:
-                    # Try integrity check first
-                    result = conn.execute("PRAGMA integrity_check").fetchone()
-                    if result[0] == "ok":
-                        # Not actually corrupted — run VACUUM to optimize
-                        conn.execute("VACUUM")
-                        backup_path.unlink(missing_ok=True)
-                        return True
-                except sqlite3.DatabaseError:
-                    pass  # Corrupted, proceed to recovery
+                if conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok":
+                    conn.execute("VACUUM")
+                    backup_path.unlink(missing_ok=True)
+                    logger.info("Database %s verified healthy; vacuumed.", name)
+                    return True
+        except sqlite3.DatabaseError as e:
+            logger.warning(
+                "Eir auto-heal [%s]: integrity check failed (%s); "
+                "attempting restore from recovery backup.",
+                name, e,
+            )
 
-            # Step 3: If corrupted, try to recover data
-            # Save the corrupted file for forensics
-            if not corrupted_path.exists():
+        # Step 3: restore — move the corrupt file aside, rebuild from backup.
+        try:
+            if corrupted_path.exists():
+                # Forensics copy already kept from an earlier run.
+                db_path.unlink(missing_ok=True)
+            else:
                 shutil.move(str(db_path), str(corrupted_path))
 
-            # Recover from backup by re-exporting (with context managers)
-            with sqlite3.connect(str(backup_path)) as recovery_conn:
-                with sqlite3.connect(str(db_path)) as new_conn:
-                    # Copy all tables
-                    for table_row in recovery_conn.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    ):
-                        table_name = table_row[0]
-                        try:
-                            new_conn.execute(f"CREATE TABLE IF NOT EXISTS {table_name} AS SELECT * FROM backup.{table_name}")
-                        except Exception:
-                            pass
-                    new_conn.commit()
-
-            backup_path.unlink(missing_ok=True)
-
-            logger.info(f"Healed database {name}")
-            return True
-
+            table_defs = self._backup_table_defs(backup_path)
+            self._restore_tables(backup_path, db_path, table_defs)
+            self._verify_restore(db_path, table_defs)
         except Exception as e:
-            logger.error(f"Failed to heal database {name}: {e}")
-            # Restore from backup if healing failed
-            if backup_path.exists():
-                shutil.copy2(str(backup_path), str(db_path))
-                backup_path.unlink(missing_ok=True)
+            logger.error(
+                "Eir auto-heal FAILURE [%s]: restore from recovery backup failed: %s. "
+                "Corrupted original preserved at %s; backup preserved at %s. "
+                "Manual intervention required.",
+                name, e, corrupted_path, backup_path,
+            )
+            # Do not leave the database missing: put the corrupted original
+            # back in place so nothing is silently destroyed.
+            if not db_path.exists() and corrupted_path.exists():
+                try:
+                    shutil.copy2(str(corrupted_path), str(db_path))
+                except OSError as ce:
+                    logger.error(
+                        "Eir auto-heal FAILURE [%s]: could not put the corrupted "
+                        "original back at %s: %s",
+                        name, db_path, ce,
+                    )
             return False
+
+        # Step 4: verification passed — only now may the backup be consumed.
+        backup_path.unlink(missing_ok=True)
+        logger.info(
+            "Eir auto-heal SUCCESS [%s]: rebuilt %s and restored %d table(s); "
+            "integrity ok, row counts match the backup.",
+            name, db_path, len(table_defs),
+        )
+        return True
+
+    @staticmethod
+    def _backup_table_defs(backup_path: Path) -> list:
+        """Read ``(name, DDL, row count)`` for every user table in the backup.
+
+        Raises if the backup itself cannot be read — a backup we cannot read
+        is a restore we must not attempt.
+        """
+        defs = []
+        with sqlite3.connect(str(backup_path)) as conn:
+            rows = conn.execute(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+            for table_name, ddl in rows:
+                count = conn.execute(
+                    f"SELECT COUNT(*) FROM {_quote_ident(table_name)}"
+                ).fetchone()[0]
+                defs.append((table_name, ddl, count))
+        return defs
+
+    @staticmethod
+    def _restore_tables(backup_path: Path, db_path: Path, table_defs: list) -> None:
+        """Rebuild ``db_path`` by ATTACHing the backup and copying schema+rows."""
+        with sqlite3.connect(str(db_path)) as new_conn:
+            new_conn.execute("ATTACH DATABASE ? AS heal_backup", (str(backup_path),))
+            try:
+                for table_name, ddl, _count in table_defs:
+                    quoted = _quote_ident(table_name)
+                    if ddl:
+                        new_conn.execute(ddl)
+                    else:
+                        # Schema text unreadable — fall back to a structure copy.
+                        new_conn.execute(
+                            f"CREATE TABLE {quoted} AS "
+                            f"SELECT * FROM heal_backup.{quoted} WHERE 0"
+                        )
+                    new_conn.execute(
+                        f"INSERT INTO {quoted} SELECT * FROM heal_backup.{quoted}"
+                    )
+                # Rebuild indexes declared in the backup (auto-indexes come
+                # back on their own with the table constraints).
+                for (index_sql,) in new_conn.execute(
+                    "SELECT sql FROM heal_backup.sqlite_master "
+                    "WHERE type = 'index' AND sql IS NOT NULL"
+                ):
+                    new_conn.execute(index_sql)
+                # Preserve AUTOINCREMENT sequence values if the backup has them.
+                has_seq = new_conn.execute(
+                    "SELECT name FROM heal_backup.sqlite_master "
+                    "WHERE name = 'sqlite_sequence'"
+                ).fetchone()
+                if has_seq:
+                    new_conn.execute(
+                        "INSERT INTO sqlite_sequence "
+                        "SELECT * FROM heal_backup.sqlite_sequence"
+                    )
+                new_conn.commit()
+            finally:
+                try:
+                    new_conn.execute("DETACH DATABASE heal_backup")
+                except sqlite3.Error as de:
+                    logger.debug("DETACH of heal_backup raised (harmless): %s", de)
+
+    @staticmethod
+    def _verify_restore(db_path: Path, table_defs: list) -> None:
+        """Raise unless the rebuilt DB is clean and row counts match the backup."""
+        with sqlite3.connect(str(db_path)) as conn:
+            check = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            if check != "ok":
+                raise RuntimeError(f"rebuilt database failed integrity_check: {check!r}")
+            for table_name, _ddl, expected in table_defs:
+                got = conn.execute(
+                    f"SELECT COUNT(*) FROM {_quote_ident(table_name)}"
+                ).fetchone()[0]
+                if got != expected:
+                    raise RuntimeError(
+                        f"row count mismatch on {table_name!r}: "
+                        f"backup has {expected}, rebuilt has {got}"
+                    )
 
     def _heal_jsonl(self, path: Path) -> bool:
         """Remove malformed lines from a JSONL file."""
