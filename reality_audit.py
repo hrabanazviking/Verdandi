@@ -240,31 +240,35 @@ def check_stored_labels(state_dir: str | None = None,
     for subject, claim in (vw.get("claims") or {}).items():
         where = f"volmarr_world:{subject}"
         if claim.get("world_id") != "heimr-volmarr":
-            findings.append({"where": where,
-                             "issue": "claim not labeled heimr-volmarr"})
+            findings.append({"check": "labels", "where": where,
+                             "detail": "claim not labeled heimr-volmarr"})
         if claim.get("reality") != "potential":
-            findings.append({"where": where,
-                             "issue": "claim about his world not tagged "
-                                      "potential — the map is not the territory"})
+            findings.append({"check": "labels", "where": where,
+                             "detail": "claim about his world not tagged "
+                                       "potential — the map is not the territory"})
         src = claim.get("source")
         if src not in ceilings:
-            findings.append({"where": where,
-                             "issue": f"unknown source {src!r}"})
+            findings.append({"check": "labels", "where": where,
+                             "detail": f"unknown source {src!r}"})
         elif claim.get("confidence", 0) > ceilings[src] + 1e-9:
-            findings.append({"where": where,
-                             "issue": f"confidence {claim.get('confidence')} "
-                                      f"exceeds {src} ceiling {ceilings[src]}"})
+            findings.append({"check": "labels", "where": where,
+                             "detail": f"confidence {claim.get('confidence')} "
+                                       f"exceeds {src} ceiling {ceilings[src]}"})
         if not claim.get("provenance"):
-            findings.append({"where": where,
-                             "issue": "claim has no provenance"})
+            findings.append({"check": "labels", "where": where,
+                             "detail": "claim has no provenance"})
     return findings
 
 
 # ---------------------------------------------------------------------------
 # 3. bleed scan of recent manifest outputs
 # ---------------------------------------------------------------------------
-def _manifest_sources(state_dir: str | None = None) -> list[tuple[str, str]]:
-    """(name, text) of my recent manifest-reality writing."""
+def _manifest_sources(state_dir: str | None = None
+                      ) -> tuple[list[tuple[str, str]], int]:
+    """(name, text) of my recent manifest-reality writing, plus the count of
+    torn autobiography chapter lines that were skipped. One corrupt line must
+    never abort the audit — bad lines are skipped loudly (stderr + count) and
+    scanning continues, like every other JSONL reader in the codebase."""
     sdir = state_dir or _state_dir()
     out = []
     for name in ("morning_mirror_journal.md", "weekly_saga.md"):
@@ -275,20 +279,27 @@ def _manifest_sources(state_dir: str | None = None) -> list[tuple[str, str]]:
         except OSError:
             continue
     chapters = []
+    skipped = 0
     cp = os.path.join(sdir, "autobiography_chapters.jsonl")
     try:
         with open(cp, encoding="utf-8") as fh:
-            for line in fh:
+            for lineno, line in enumerate(fh, 1):
                 line = line.strip()
-                if line:
+                if not line:
+                    continue
+                try:
                     chapters.append(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    skipped += 1
+                    print(f"reality_audit: skipping torn chapter line "
+                          f"{lineno} in {cp}: {exc}", file=sys.stderr)
     except OSError:
         pass
     for ch in chapters:
         text = ch.get("text", "")
         if text:
             out.append((f"autobiography:{ch.get('title', '?')}", text))
-    return out
+    return out, skipped
 
 
 def _strip_labeled_lines(text: str) -> str:
@@ -301,7 +312,8 @@ def check_bleed(state_dir: str | None = None) -> list[dict]:
     """Scan manifest outputs for unlabeled potential-world content."""
     terms = load_terms(state_dir)
     findings = []
-    for name, text in _manifest_sources(state_dir):
+    sources, _skipped = _manifest_sources(state_dir)
+    for name, text in sources:
         clean = _strip_labeled_lines(text)
         lowered = clean.lower()
         for world_id, words in terms.items():
