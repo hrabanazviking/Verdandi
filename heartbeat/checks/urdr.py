@@ -22,6 +22,7 @@ Config:
 """
 
 import json
+import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,10 +34,32 @@ from heartbeat.paths import get_state_dir
 
 class UrdrCheck(BaseCheck):
     """Schedule keeper: cron health, missed runs, stuck processes."""
-    
+
     name = "schedule"
     description = "Schedule health: cron jobs, systemd timers, stuck processes"
-    
+
+    # systemctl status output carries a line like "     Active: active (running)".
+    # A naive `"active" in stdout` substring check misfires on
+    # "Active: inactive (dead)" (the word "inactive" contains "active"),
+    # which makes dead services look alive and suppresses auto-restart.
+    _SYSTEMD_ACTIVE_RE = re.compile(r"^\s*Active:\s+(\S+)", re.MULTILINE)
+
+    # Recognized @-spec schedule shorthands in crontabs (cron(8) / Vixie cron).
+    _CRON_AT_SPECS = frozenset({
+        "@reboot", "@yearly", "@annually", "@monthly",
+        "@weekly", "@daily", "@midnight", "@hourly",
+    })
+
+    @classmethod
+    def _parse_systemd_active(cls, stdout: str) -> bool:
+        """True iff the unit's Active: state is literally 'active'.
+
+        Any other state (inactive, failed, activating, deactivating,
+        unknown, or a missing/empty Active: line) means NOT active.
+        """
+        match = cls._SYSTEMD_ACTIVE_RE.search(stdout or "")
+        return match is not None and match.group(1).strip().lower() == "active"
+
     def _perform_check(self) -> CheckResult:
         """Check all scheduled systems."""
         issues = []
@@ -113,16 +136,23 @@ class UrdrCheck(BaseCheck):
                     line = line.strip()
                     if not line or line.startswith("#"):
                         continue
-                    # Parse cron line
+                    # Parse cron line. @-spec lines (@reboot, @daily, @hourly,
+                    # ...) are valid jobs with only two tokens, so they must
+                    # not be dropped by the 5-time-field requirement.
                     parts = line.split(None, 5)
-                    if len(parts) >= 6:
+                    if parts[0].startswith("@") and len(parts) >= 2:
+                        schedule = parts[0]
+                        command = " ".join(parts[1:])
+                    elif len(parts) >= 6:
                         schedule = " ".join(parts[:5])
                         command = parts[5]
-                        job_count += 1
-                        details["jobs"].append({
-                            "schedule": schedule,
-                            "command": command[:80],  # Truncate long commands
-                        })
+                    else:
+                        continue
+                    job_count += 1
+                    details["jobs"].append({
+                        "schedule": schedule,
+                        "command": command[:80],  # Truncate long commands
+                    })
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
         
@@ -167,7 +197,7 @@ class UrdrCheck(BaseCheck):
                     ["systemctl", "--user", "status", service_name],
                     capture_output=True, text=True, timeout=10
                 )
-                service_info["active"] = "active" in result.stdout
+                service_info["active"] = self._parse_systemd_active(result.stdout)
                 service_info["status_output"] = result.stdout[:200]
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 # Try without --user
@@ -176,7 +206,7 @@ class UrdrCheck(BaseCheck):
                         ["systemctl", "status", service_name],
                         capture_output=True, text=True, timeout=10
                     )
-                    service_info["active"] = "active" in result.stdout
+                    service_info["active"] = self._parse_systemd_active(result.stdout)
                 except (FileNotFoundError, subprocess.TimeoutExpired):
                     service_info["active"] = False
                     service_info["note"] = "systemctl not available"
