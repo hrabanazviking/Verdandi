@@ -26,7 +26,13 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path.home() / ".hermes" / "state"))
+# Import the repo-local conversation_logger FIRST, so a deployed copy of
+# conversation_logger.py in ~/.hermes/state can never shadow the repo file
+# (S11 fix). The state-dir copy remains as a fallback only when the repo
+# copy is absent.
+_REPO_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_REPO_DIR))
+sys.path.append(str(Path.home() / ".hermes" / "state"))
 from conversation_logger import (
     cmd_start, cmd_end, cmd_event,
     get_context_for_cron, get_current_state, _get_entries_for_session, _get_recent_sessions
