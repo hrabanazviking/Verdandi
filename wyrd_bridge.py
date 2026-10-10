@@ -73,6 +73,16 @@ WYRD_REPO = os.environ.get(
 HORIZON_HOURS = float(os.environ.get("WYRD_BRIDGE_HORIZON_HOURS", "24"))
 
 
+class WyrdUnavailableError(ImportError):
+    """The WYRD world-model backend (wyrdforge) cannot be loaded.
+
+    Raised instead of a bare ModuleNotFoundError so callers can tell
+    "the sibling repo is absent or broken" apart from any other import
+    failure, and degrade gracefully. The message always names the repo
+    path that was expected.
+    """
+
+
 def _state_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".hermes", "state")
 
@@ -86,11 +96,38 @@ def _default_emit(event_type: str, data: dict) -> None:
 
 
 def _load_wyrdforge():
+    """Import the wyrdforge bridge backend.
+
+    Raises WyrdUnavailableError (never a bare ModuleNotFoundError) when
+    the WYRD repo checkout is absent, and the same typed error when the
+    repo exists but the import still fails. The message names the repo
+    path so the failure is actionable.
+    """
     src = os.path.join(WYRD_REPO, "src")
-    if src not in sys.path:
-        sys.path.insert(0, src)
-    from wyrdforge.bridges import verdandi_bridge as _vb
-    return _vb.VerdandiBridge, _vb
+    mod = sys.modules.get("wyrdforge.bridges.verdandi_bridge")
+    if mod is None:
+        if not os.path.isdir(src):
+            raise WyrdUnavailableError(
+                "wyrdforge unavailable: WYRD repo not found at "
+                f"{WYRD_REPO!r} (expected its src/ at {src!r}); "
+                "set WYRD_REPO to the checkout path to enable the mirror.")
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        try:
+            from wyrdforge.bridges import verdandi_bridge as mod
+        except ImportError as exc:
+            raise WyrdUnavailableError(
+                "wyrdforge unavailable: could not import "
+                f"wyrdforge.bridges.verdandi_bridge from {src!r}: "
+                f"{exc}") from exc
+    try:
+        bridge_cls = mod.VerdandiBridge
+    except AttributeError as exc:
+        raise WyrdUnavailableError(
+            "wyrdforge unavailable: the loaded "
+            "wyrdforge.bridges.verdandi_bridge module "
+            f"(from {WYRD_REPO!r}) has no VerdandiBridge") from exc
+    return bridge_cls, mod
 
 
 def _load_ledger(path: str) -> dict:

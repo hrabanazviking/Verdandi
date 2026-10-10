@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import random
 import signal
 import sys
 import time
@@ -48,6 +49,19 @@ BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "Unnr_bot").lower()
 POLL_INTERVAL_S = float(os.environ.get("TELEGRAM_BRIDGE_POLL_S", "5"))
 SEEN_MAX = int(os.environ.get("TELEGRAM_BRIDGE_SEEN_MAX", "2000"))
 REQUEST_TIMEOUT_S = float(os.environ.get("TELEGRAM_BRIDGE_REQ_TIMEOUT_S", "15"))
+
+# Slice 14 — bounded retry policy for the transport layer. A failed
+# transport call is retried SEND_MAX_RETRIES times after the first
+# attempt, sleeping base*2**attempt seconds plus random jitter between
+# attempts, never sleeping more than SEND_BACKOFF_CAP_S per pause.
+SEND_MAX_RETRIES = 5
+SEND_BACKOFF_BASE_S = 1.0
+SEND_BACKOFF_CAP_S = 60.0
+
+# Slice 15 — Telegram rejects message text longer than 4096 chars, so
+# outbound messages are truncated with this marker instead.
+TELEGRAM_MESSAGE_LIMIT = 4096
+TRUNCATION_MARKER = "… [truncated]"
 
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".hermes", "state")
 BRIDGE_STATE_PATH = os.path.join(STATE_DIR, "telegram_bridge_state.json")
@@ -105,6 +119,83 @@ def fetch_updates(timeout: int = 0, limit: int = 100) -> list[dict] | None:
         return body.get("result", [])
     except Exception:
         return None
+
+
+def _request_with_retry(fn, *args, **kwargs):
+    """Call transport ``fn`` with bounded exponential backoff + jitter.
+
+    A call "fails" when it raises or returns ``None``. Between attempts it
+    sleeps ``SEND_BACKOFF_BASE_S * 2**attempt`` seconds plus a random
+    jitter of up to one base interval, capped at ``SEND_BACKOFF_CAP_S``.
+    At most ``SEND_MAX_RETRIES`` retries follow the first attempt.
+
+    Returns ``(value, last_error)`` — ``value`` is the first non-None
+    result, or ``None`` when every attempt failed; ``last_error`` is a
+    string describing the final failure (or ``None`` on success).
+    """
+    last_error = None
+    for attempt in range(SEND_MAX_RETRIES + 1):
+        try:
+            value = fn(*args, **kwargs)
+        except Exception as exc:  # transport blew up: retryable
+            value = None
+            last_error = f"{type(exc).__name__}: {exc}"
+        if value is not None:
+            return value, None
+        if last_error is None:
+            last_error = "transport returned None"
+        if attempt < SEND_MAX_RETRIES:
+            delay = SEND_BACKOFF_BASE_S * (2 ** attempt)
+            delay += random.uniform(0, SEND_BACKOFF_BASE_S)
+            time.sleep(min(delay, SEND_BACKOFF_CAP_S))
+    return None, last_error
+
+
+def _truncate_for_telegram(text) -> str:
+    """Cap outbound text at Telegram's 4096-char limit.
+
+    Longer text is cut to ``4096 - len(marker)`` chars and the marker
+    appended, so the result is always <= 4096 chars and never gets
+    rejected by the API.
+    """
+    text = "" if text is None else str(text)
+    if len(text) <= TELEGRAM_MESSAGE_LIMIT:
+        return text
+    return text[:TELEGRAM_MESSAGE_LIMIT - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
+
+
+def send_message(chat_id, text):
+    """Post ``text`` to a Telegram chat (the bridge's outbound path).
+
+    Same auth pattern as :func:`fetch_updates` — dynamic-credentials
+    surrogate, ``ALLOWED_HOSTS`` check, POST to ``sendMessage``. The text
+    is truncated first (slice 15), then posted through the bounded retry
+    helper (slice 14). Returns the API result dict, or ``None`` when
+    every attempt was exhausted.
+    """
+    body = _truncate_for_telegram(text)
+    try:
+        dc = _load_helper()
+        entry = dc.dynamic_credential_entry(CREDENTIAL)
+        surrogate = str(entry["surrogate"]).strip()
+        url = API_TEMPLATE.replace("{}", surrogate, 1) + "sendMessage"
+        dc.ensure_allowed_url(url, ALLOWED_HOSTS)
+        data = json.dumps({"chat_id": chat_id, "text": body}).encode("utf-8")
+    except Exception:
+        return None
+
+    def _post():
+        req = urllib.request.Request(url, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        # NOTE: no custom User-Agent — same edge-drop quirk as fetch.
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
+            result = dc.read_json_response(resp)
+        if not result.get("ok"):
+            raise RuntimeError(f"telegram sendMessage not ok: {result}")
+        return result
+
+    result, _last_error = _request_with_retry(_post)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -256,12 +347,22 @@ class TelegramBridge:
     def poll_once(self) -> int:
         """One non-destructive poll; returns number of new events emitted.
 
-        Returns 0 both when the queue is empty and when the fetch failed;
-        check ``consecutive_fetch_failures`` to tell the difference.
+        The fetch runs through the bounded retry helper: a poll only
+        counts as failed when every transport attempt is exhausted, and
+        exactly one ``telegram_bridge_transport_failed`` event is then
+        emitted to the nerve for that poll.
         """
-        updates = self.fetch()
+        updates, last_error = _request_with_retry(self.fetch)
         if updates is None:
             self.consecutive_fetch_failures += 1
+            try:
+                self.emit("telegram_bridge_transport_failed", {
+                    "consecutive_failures": self.consecutive_fetch_failures,
+                    "last_error": last_error,
+                    "at": _utcnow_iso(),
+                })
+            except Exception:
+                pass
             # Log roughly once a minute so a dead fetch can never go
             # unnoticed for long (stderr -> the supervisor's bridge log).
             if self.consecutive_fetch_failures % 12 == 1:

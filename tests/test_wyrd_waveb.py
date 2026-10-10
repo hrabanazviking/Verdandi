@@ -21,6 +21,313 @@ from wyrd_inbound import check_divergence, mirror_context, render_context
 
 TS = time.time()  # nerve-feed timestamp: always inside the 24h replay window
 
+
+def _wyrdforge_importable():
+    try:
+        import wyrdforge  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+_WYRD_AVAILABLE = _wyrdforge_importable()
+
+# Tests that need the REAL wyrdforge backend skip while the WYRD repo is
+# absent. All the run()-based tests below exercise wyrd_bridge's
+# decoupled logic through the fake_wyrdforge test double instead and
+# run regardless.
+requires_wyrdforge = pytest.mark.skipif(not _WYRD_AVAILABLE,
+                                        reason="WYRD repo absent")
+
+
+def _build_fake_wyrdforge():
+    """Minimal wyrdforge test double — same surface contract as the one
+    in test_wyrd_bridge.py (duplicated deliberately so each test file is
+    self-contained): the VerdandiBridge class, the vb constants and the
+    vb functions parse_memory_beliefs/sample_senses/environment_facts.
+    A test double, not the real backend — faithful enough that stable
+    IDs, mapping, supersedes chains, transition detection, ledger shape
+    and witness gating are genuinely exercised."""
+    import hashlib
+    import re
+    import types
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    vb = types.ModuleType("wyrdforge.bridges.verdandi_bridge")
+    vb.__doc__ = "Test double for wyrdforge.bridges.verdandi_bridge."
+
+    vb.VOLMARR_ID = "person:volmarr"
+    vb.PERSON_ROSTER = ("veyrunn", "aurora", "caducea", "runa")
+    vb.MACHINE_ID = "env:machine"
+    vb.RHYTHM_ID = "env:rhythm"
+    vb.PLACE_ANGOLA_ID = "env:place-angola"
+    vb.PLACE_TORC_ID = "env:place-torc"
+
+    _UNMAPPED = {"ping", "entity.heartbeat", "wyrd_mirror_synced",
+                 "wyrd_divergence", "wyrd_divergence_resolved",
+                 "probe_recorded"}
+
+    class _FakeWorld:
+        def __init__(self):
+            self.world_id = "heimr-wyrd-unnr"
+            self.identity = SimpleNamespace(reality="manifest")
+
+        def registry_entry(self):
+            return {"world_id": self.world_id, "kind": "wyrd",
+                    "reality": "manifest", "source": "wyrd_bridge",
+                    "description": "WYRD mirror world (test double)",
+                    "status": "active"}
+
+    class VerdandiBridge:
+        def __init__(self, ledger=None):
+            self._ledger = ledger if ledger is not None else {}
+            self._entities = {}
+            self._anchors = []
+            self._beliefs = []
+            self._memory_beliefs = []
+            self._reflections = []
+            self._senses = []
+            self._transitions = []
+            self._env = {}
+            self.world = _FakeWorld()
+
+        def ensure_entity(self, entity_id, kinds):
+            self._entities.setdefault(entity_id, set()).update(kinds)
+
+        def _handlers(self):
+            return {"mood_shift": self._map_mood,
+                    "wish_made": self._map_wish,
+                    "self_reflection": self._map_reflection}
+
+        def apply_event(self, etype, data, ts):
+            if etype in _UNMAPPED:
+                return None
+            handler = self._handlers().get(etype)
+            if handler is None:
+                return None
+            return handler(data or {}, ts)
+
+        def _anchor(self, label, tense, at):
+            self._anchors.append({"label": label, "tense": tense,
+                                  "at": at, "tags": []})
+
+        def _map_mood(self, data, ts):
+            after = data.get("after", {}) or {}
+            valence = after.get("valence", 0.0)
+            self._beliefs.append(
+                {"subject": "unnr:mood",
+                 "claim": f"my valence sits at {valence}",
+                 "confidence": 1.0, "source": "observed"})
+            self._anchor(f"mood shift (valence {valence})", "verdhandi", ts)
+            return f"mapped mood_shift (valence {valence})"
+
+        def _map_wish(self, data, ts):
+            wid = data.get("wish_id", "?")
+            text = data.get("text", "")
+            self._beliefs.append(
+                {"subject": f"wish:{wid}",
+                 "claim": f"I want this: {text}",
+                 "confidence": 1.0, "source": "observed"})
+            self._anchor(f"wish made: {text}", "verdhandi", ts)
+            return f"mapped wish_made {wid}"
+
+        def _map_reflection(self, data, ts):
+            thought = str(data.get("thought", ""))
+            seq = data.get("seq")
+            try:
+                depth = int(data.get("depth", 0) or 0)
+            except (TypeError, ValueError):
+                depth = 0
+            if depth >= 2:
+                return None  # depth cap: meta-reflections are refused
+            digest = hashlib.sha1(
+                f"{thought}|{seq}".encode("utf-8")).hexdigest()
+            seen = self._ledger.get("reflection_seen")
+            if not isinstance(seen, dict):
+                seen = self._ledger["reflection_seen"] = {}
+            if digest in seen:
+                return None  # 24h anti-echo dedup: replays drop quietly
+            seen[digest] = datetime.now(timezone.utc).isoformat()
+            self._reflections.append(
+                {"entity_id": f"reflection:{seq}", "thought": thought,
+                 "about": [], "depth": depth, "seq": seq,
+                 "ts": datetime.now(timezone.utc).isoformat()})
+            return f"mapped self_reflection seq={seq}"
+
+        def attach_memory_beliefs(self, entity_id, beliefs):
+            for b in beliefs or []:
+                rec = dict(b)
+                rec["entity_id"] = entity_id
+                self._memory_beliefs.append(rec)
+
+        def note_sense_transitions(self, transitions):
+            self._transitions = list(transitions or [])
+
+        def attach_senses(self, readings):
+            self._senses = [
+                {"metric": r.metric, "status": r.status,
+                 "prev_status": getattr(r, "prev_status", None)}
+                for r in readings or []]
+
+        def attach_environment(self, entity_id, fact):
+            self._env.setdefault(entity_id, []).append(fact)
+
+        def summary(self):
+            return {"world_id": self.world.world_id,
+                    "reality": "manifest",
+                    "entities": len(self._entities),
+                    "anchors": self._anchors,
+                    "beliefs": self._beliefs,
+                    "memory_beliefs": self._memory_beliefs,
+                    "reflections": self._reflections,
+                    "senses": self._senses,
+                    "sense_transitions": self._transitions}
+
+    vb.VerdandiBridge = VerdandiBridge
+
+    _BULLET_TAG_RE = re.compile(r"^\[(\w+)\|(\w+)\]\s*(.*)$", re.S)
+    _SALIENCE_RANK = {"high": 0, "medium": 1, "low": 2}
+
+    def _read_bullets(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            return []
+        return [ln.strip()[2:].strip() for ln in text.splitlines()
+                if ln.strip().startswith("- ")]
+
+    def _belief_record(entity_id, claim, kind, salience, src):
+        slug = "-".join(re.findall(r"[a-z0-9]+", claim.lower())[:4])
+        return {"entity_id": entity_id,
+                "subject": f"{entity_id}:{slug or 'claim'}",
+                "claim": claim, "salience": salience,
+                "confidence": 0.9, "kind": kind, "src": src,
+                "supersedes": None,
+                "formed_at": datetime.now(timezone.utc).isoformat()}
+
+    def _parse_claims(path, src_label, claims, dead):
+        for bullet in _read_bullets(path):
+            if bullet.lower().startswith("supersedes:"):
+                target = bullet[len("supersedes:"):].strip()
+                dead.add(target)
+                claims[:] = [c for c in claims if c[0] != target]
+                continue
+            m = _BULLET_TAG_RE.match(bullet)
+            if m:
+                kind, salience, claim = (m.group(1), m.group(2),
+                                        m.group(3).strip())
+            else:
+                kind, salience, claim = "fact", "medium", bullet
+            if not claim or claim in dead:
+                continue
+            if any(c[0] == claim for c in claims):
+                continue
+            claims.append((claim, kind, salience, src_label))
+
+    def parse_memory_beliefs(home=None, now=None):
+        home = home or os.path.expanduser("~")
+        out = {}
+        volmarr_claims: list = []
+        dead: set = set()
+        _parse_claims(os.path.join(home, "MEMORY.md"), "MEMORY.md",
+                      volmarr_claims, dead)
+        bank = os.path.join(home, "memory", "bank")
+        try:
+            bank_files = sorted(os.listdir(bank))
+        except OSError:
+            bank_files = []
+        for name in bank_files:
+            if name.endswith(".md"):
+                _parse_claims(os.path.join(bank, name),
+                              f"memory/bank/{name}", volmarr_claims, dead)
+        now_dt = now or datetime.now(timezone.utc)
+        mem_dir = os.path.join(home, "memory")
+        try:
+            mem_files = sorted(os.listdir(mem_dir))
+        except OSError:
+            mem_files = []
+        for name in mem_files:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}\.md", name):
+                continue
+            try:
+                day = datetime.strptime(name[:-3], "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if (now_dt - day).days <= 7:
+                _parse_claims(os.path.join(mem_dir, name),
+                              f"memory/{name}", volmarr_claims, dead)
+        volmarr_claims.sort(key=lambda c: (_SALIENCE_RANK.get(c[2], 1),))
+        out[vb.VOLMARR_ID] = [
+            _belief_record(vb.VOLMARR_ID, claim, kind, salience, src)
+            for claim, kind, salience, src in volmarr_claims[:40]]
+        for slug in vb.PERSON_ROSTER:
+            eid = f"person:{slug}"
+            claims: list = []
+            _parse_claims(os.path.join(home, "memory", "people", f"{slug}.md"),
+                          f"memory/people/{slug}.md", claims, set())
+            claims.sort(key=lambda c: (_SALIENCE_RANK.get(c[2], 1),))
+            out[eid] = [_belief_record(eid, claim, kind, salience, src)
+                        for claim, kind, salience, src in claims[:8]]
+        return out
+
+    vb.parse_memory_beliefs = parse_memory_beliefs
+
+    def sample_senses(home=None, state_dir=None,
+                      meminfo_path="/proc/meminfo", feed_path=None, now=None):
+        status = "unknown"
+        try:
+            with open(meminfo_path, encoding="utf-8") as fh:
+                text = fh.read()
+            m = re.search(r"MemAvailable:\s+(\d+)", text)
+            if m:
+                mib = int(m.group(1)) / 1024
+                status = ("ok" if mib >= 1024
+                          else "warn" if mib >= 512 else "red")
+        except OSError:
+            pass
+        return [SimpleNamespace(metric="mem_available_mib", status=status,
+                                prev_status=None)]
+
+    vb.sample_senses = sample_senses
+
+    def environment_facts(now=None):
+        iso = (now or datetime.now(timezone.utc)).isoformat()
+        return [{"fact": "daily rhythm holds", "source": "clock", "at": iso},
+                {"fact": "test double environment", "source": "fixture",
+                 "at": iso}]
+
+    vb.environment_facts = environment_facts
+
+    bridges = types.ModuleType("wyrdforge.bridges")
+    bridges.verdandi_bridge = vb
+    pkg = types.ModuleType("wyrdforge")
+    pkg.__path__ = []
+    pkg.bridges = bridges
+    return {"wyrdforge": pkg,
+            "wyrdforge.bridges": bridges,
+            "wyrdforge.bridges.verdandi_bridge": vb}
+
+
+@pytest.fixture
+def fake_wyrdforge():
+    """Inject the wyrdforge test double into sys.modules (removed
+    afterwards, so the real absence is visible again)."""
+    names = ("wyrdforge", "wyrdforge.bridges",
+             "wyrdforge.bridges.verdandi_bridge")
+    saved = {k: sys.modules.get(k) for k in names}
+    sys.modules.update(_build_fake_wyrdforge())
+    try:
+        yield sys.modules["wyrdforge.bridges.verdandi_bridge"]
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                sys.modules.pop(k, None)
+            else:
+                sys.modules[k] = v
+
 _HIGH_MEMINFO = "MemTotal:        8000000 kB\nMemAvailable:    2080688 kB\n"
 _LOW_MEMINFO = "MemTotal:         8000000 kB\nMemAvailable:     400000 kB\n"
 
@@ -98,14 +405,14 @@ def _ledger(path):
 
 
 # -- the ledger: exactly two maps, self-healing --------------------------------
-def test_ledger_exactly_two_maps(paths):
+def test_ledger_exactly_two_maps(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])
     run(emit=lambda t, d: None, **paths)
     ledger = _ledger(paths["ledger_path"])
     assert set(ledger.keys()) == {"last_sense_status", "reflection_seen"}
 
 
-def test_corrupt_ledger_self_heals(paths):
+def test_corrupt_ledger_self_heals(paths, fake_wyrdforge):
     with open(paths["ledger_path"], "w", encoding="utf-8") as fh:
         fh.write("{not json")
     _write_feed(paths["feed_path"], [("ping", {})])
@@ -116,7 +423,7 @@ def test_corrupt_ledger_self_heals(paths):
     assert ledger["last_sense_status"]["mem_available_mib"] == "ok"
 
 
-def test_missing_ledger_is_fine(paths):
+def test_missing_ledger_is_fine(paths, fake_wyrdforge):
     assert not os.path.exists(paths["ledger_path"])
     _write_feed(paths["feed_path"], [("ping", {})])
     run(emit=lambda t, d: None, **paths)
@@ -124,7 +431,7 @@ def test_missing_ledger_is_fine(paths):
 
 
 # -- the mirror is written every run; the witness only on mapped changes -------
-def test_mirror_written_every_run(paths):
+def test_mirror_written_every_run(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])  # unmapped: quiet
     emitted = []
     result = run(emit=lambda t, d: emitted.append((t, d)), **paths)
@@ -136,7 +443,7 @@ def test_mirror_written_every_run(paths):
     assert "memory_beliefs" in mirror and "reflections" in mirror
 
 
-def test_witness_only_on_mapped(paths):
+def test_witness_only_on_mapped(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [
         ("mood_shift", {"after": {"valence": 0.8, "energy": 0.7}}),
     ])
@@ -146,7 +453,7 @@ def test_witness_only_on_mapped(paths):
     assert [t for t, _ in emitted] == ["wyrd_mirror_synced"]
 
 
-def test_sense_transition_rewrites_mirror_without_witness(paths):
+def test_sense_transition_rewrites_mirror_without_witness(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])
     run(emit=lambda t, d: None, **paths)  # baseline: mem ok
     _write_meminfo(paths["meminfo_path"], high=False)  # 390 MiB → red
@@ -164,7 +471,7 @@ def test_sense_transition_rewrites_mirror_without_witness(paths):
 
 
 # -- exclusions ------------------------------------------------------------------
-def test_excluded_events_remain_unmapped():
+def test_excluded_events_remain_unmapped(fake_wyrdforge):
     from wyrdforge.bridges.verdandi_bridge import VerdandiBridge
     b = VerdandiBridge()
     for etype in ("ping", "entity.heartbeat", "wyrd_mirror_synced",
@@ -173,13 +480,13 @@ def test_excluded_events_remain_unmapped():
         assert b.apply_event(etype, {}, TS) is None, etype
 
 
-def test_no_sense_nerve_events():
+def test_no_sense_nerve_events(fake_wyrdforge):
     from wyrdforge.bridges.verdandi_bridge import VerdandiBridge
     handlers = VerdandiBridge()._handlers()
     assert not [k for k in handlers if k.startswith("sense_")]
 
 
-def test_no_subprocesses_spawned(paths, monkeypatch):
+def test_no_subprocesses_spawned(paths, fake_wyrdforge, monkeypatch):
     import subprocess
 
     def _boom(*a, **k):
@@ -193,7 +500,7 @@ def test_no_subprocesses_spawned(paths, monkeypatch):
 
 
 # -- stable entities, roster, caps, supersedes ------------------------------------
-def test_stable_ids_across_runs(paths):
+def test_stable_ids_across_runs(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])
     run(emit=lambda t, d: None, **paths)
     ids1 = {e["entity_id"] for e in _mirror(paths["mirror_path"])["memory_beliefs"]}
@@ -202,7 +509,7 @@ def test_stable_ids_across_runs(paths):
     assert ids1 == ids2 and ids1  # identity by stable key, not by rebuild
 
 
-def test_inner_circle_entities(paths):
+def test_inner_circle_entities(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])
     run(emit=lambda t, d: None, **paths)
     ids = {b["entity_id"]
@@ -211,7 +518,7 @@ def test_inner_circle_entities(paths):
             "person:caducea", "person:runa"} <= ids
 
 
-def test_person_cap_eight(paths):
+def test_person_cap_eight(paths, fake_wyrdforge):
     page = os.path.join(paths["home"], "memory", "people", "veyrunn.md")
     with open(page, "w", encoding="utf-8") as fh:
         fh.write("---\nsummary: x.\n---\n## Facts\n" +
@@ -223,7 +530,7 @@ def test_person_cap_eight(paths):
     assert len(vey) == 8
 
 
-def test_volmarr_cap_forty(paths):
+def test_volmarr_cap_forty(paths, fake_wyrdforge):
     bank = os.path.join(paths["home"], "memory", "bank", "big.md")
     with open(bank, "w", encoding="utf-8") as fh:
         for i in range(60):
@@ -236,7 +543,7 @@ def test_volmarr_cap_forty(paths):
     assert len(vol) == 40
 
 
-def test_supersedes_chain_in_mirror(paths):
+def test_supersedes_chain_in_mirror(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])
     run(emit=lambda t, d: None, **paths)
     claims = [b["claim"]
@@ -248,7 +555,7 @@ def test_supersedes_chain_in_mirror(paths):
 
 
 # -- reflection round-trip ---------------------------------------------------------
-def test_reflection_roundtrip_dedup(paths):
+def test_reflection_roundtrip_dedup(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [
         ("self_reflection", {"thought": "Steady work today.", "seq": 1,
                              "depth": 0}),
@@ -263,7 +570,7 @@ def test_reflection_roundtrip_dedup(paths):
     assert _mirror(paths["mirror_path"])["reflections"] == []
 
 
-def test_depth2_reflection_refused_in_run(paths):
+def test_depth2_reflection_refused_in_run(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [
         ("self_reflection", {"thought": "meta meta", "seq": 2, "depth": 2}),
     ])
@@ -273,7 +580,7 @@ def test_depth2_reflection_refused_in_run(paths):
 
 
 # -- the run stays fast --------------------------------------------------------------
-def test_run_inside_120s(paths):
+def test_run_inside_120s(paths, fake_wyrdforge):
     _write_feed(paths["feed_path"], [("ping", {})])
     start = time.monotonic()
     run(emit=lambda t, d: None, **paths)
@@ -387,3 +694,17 @@ def test_reflections_excluded_from_context(tmp_path):
     assert ctx is not None
     assert "the secret thought" not in json.dumps(ctx)
     assert "the secret thought" not in render_context(ctx)
+
+
+# -- real backend integration (skips while the WYRD repo is absent) ----------
+@requires_wyrdforge
+def test_real_wyrdforge_bridge_surface():
+    """The real wyrdforge backend exposes the bridge surface the Wave B
+    attach phase relies on. Skipped with 'WYRD repo absent' until the
+    sibling checkout exists."""
+    from wyrdforge.bridges import verdandi_bridge as vb
+    assert hasattr(vb, "VerdandiBridge")
+    for name in ("VOLMARR_ID", "PERSON_ROSTER", "MACHINE_ID", "RHYTHM_ID",
+                 "PLACE_ANGOLA_ID", "PLACE_TORC_ID", "parse_memory_beliefs",
+                 "sample_senses", "environment_facts"):
+        assert hasattr(vb, name), name

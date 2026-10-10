@@ -98,7 +98,11 @@ def _load_state(path):
             "last_seq": int(data.get("last_seq", 0)),
             "open": dict(data.get("open", {})),
         }
-    except (FileNotFoundError, ValueError, KeyError, TypeError):
+    except (FileNotFoundError, ValueError, KeyError, TypeError,
+            AttributeError):
+        # Corrupt state degrades to fresh (first-run: witness from here,
+        # no backfill). AttributeError covers valid JSON of the wrong
+        # shape (a list, string, or number has no .get).
         return {"last_seq": 0, "open": {}}
 
 

@@ -83,6 +83,21 @@ def _state_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".hermes", "state")
 
 
+def wyrdforge_available() -> bool:
+    """True when the wyrdforge backend (the WYRD sibling repo) is importable.
+
+    The inbound bridge never imports wyrdforge itself — the outbound
+    runner (wyrd_bridge) does — so this is purely advisory: it tells
+    callers whether Slice 1 could ever produce a projection. Never
+    raises; absence is a normal, quiet state.
+    """
+    try:
+        import wyrdforge  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _default_emit(event_type: str, data: dict) -> None:
     if _nerve_publish is None:
         return
@@ -379,6 +394,13 @@ def main(argv: list[str] | None = None) -> int:
     if ctx is None:
         if not quiet:
             print("wyrd_inbound: no mirror projection yet (Slice 1 has not synced).")
+        if not wyrdforge_available():
+            # The outbound bridge can never run without the backend, so
+            # no projection can ever appear: say so once, on stderr, and
+            # degrade quietly. This is the graceful path — never an
+            # exception, never a crash.
+            print("wyrd_inbound: wyrdforge backend unavailable — degrading "
+                  "quietly (no mirror context).", file=sys.stderr)
         return 0
     if not quiet:
         print(render_context(ctx))

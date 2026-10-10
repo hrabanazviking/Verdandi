@@ -66,6 +66,11 @@ class VörAction(BaseAction):
             prediction_details = skuld.details
             capacity = prediction_details.get("capacity", {})
             for resource, pred in capacity.items():
+                # capacity may carry status strings ("insufficient_data",
+                # "minimum_required") alongside per-resource prediction dicts —
+                # only dicts have an urgency (same guard as skuld.py uses).
+                if not isinstance(pred, dict):
+                    continue
                 if pred.get("urgency") in ("critical", "warning"):
                     return True
 

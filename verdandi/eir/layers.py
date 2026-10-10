@@ -11,6 +11,7 @@ has its own depth, and the healer must choose how deep to go.
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+import sys
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -202,7 +203,13 @@ def load_profiles_from_yaml(path: Path) -> Dict[str, EffortProfile]:
                 enabled: true
                 checks: [collections]
     """
-    if not path.exists():
+    if not path.is_file():
+        if path.exists():
+            print(
+                f"Warning: YAML layer-config path {path} exists but is not a "
+                f"file — ignoring it and returning defaults.",
+                file=sys.stderr,
+            )
         return {}
 
     with open(path) as f:

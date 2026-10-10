@@ -41,6 +41,14 @@ from heartbeat.actions import ACTION_REGISTRY
 from heartbeat.actions.base import BaseAction, ActionSeverity, ActionResult, ActionContext
 from heartbeat.reactor import Reactor, ReactionRule
 
+# Repo root derived from this test file's location (tests/ → parent = repo root),
+# overridable via the VERDANDI_REPO environment variable. Used as the cwd for
+# subprocess CLI invocations so the heartbeat package is importable.
+REPO_ROOT = Path(os.environ.get(
+    "VERDANDI_REPO",
+    Path(__file__).resolve().parent.parent,
+))
+
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. FULL SYSTEM INITIALIZATION
@@ -319,7 +327,7 @@ class TestCLIIntegration:
         result = subprocess.run(
             ["python3", "-m", "heartbeat.cli", "pulse"],
             capture_output=True, text=True, timeout=30,
-            cwd=str(Path.home() / "Verdandi"),
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
 
@@ -327,7 +335,7 @@ class TestCLIIntegration:
         result = subprocess.run(
             ["python3", "-m", "heartbeat.cli", "paths"],
             capture_output=True, text=True, timeout=10,
-            cwd=str(Path.home() / "Verdandi"),
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
         assert "state_dir" in result.stdout
@@ -336,7 +344,7 @@ class TestCLIIntegration:
         result = subprocess.run(
             ["python3", "-m", "heartbeat.cli", "config"],
             capture_output=True, text=True, timeout=10,
-            cwd=str(Path.home() / "Verdandi"),
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
 
@@ -344,7 +352,7 @@ class TestCLIIntegration:
         result = subprocess.run(
             ["python3", "-m", "heartbeat.cli", "react"],
             capture_output=True, text=True, timeout=30,
-            cwd=str(Path.home() / "Verdandi"),
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
         assert "DRY-RUN" in result.stdout
@@ -354,7 +362,7 @@ class TestCLIIntegration:
         result = subprocess.run(
             ["python3", "-m", "heartbeat.cli", "--version"],
             capture_output=True, text=True, timeout=10,
-            cwd=str(Path.home() / "Verdandi"),
+            cwd=str(REPO_ROOT),
         )
         assert result.returncode == 0
         assert "0.3.0" in result.stdout
