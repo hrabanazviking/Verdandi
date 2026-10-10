@@ -188,9 +188,9 @@ def get_profile(effort: EffortLevel) -> EffortProfile:
 
 def load_profiles_from_yaml(path: Path) -> Dict[str, EffortProfile]:
     """Load custom effort profiles from a YAML config file.
-    
+
     YAML format:
-    
+
         effort_levels:
           quick:
             description: "Fast pulse"
@@ -202,6 +202,12 @@ def load_profiles_from_yaml(path: Path) -> Dict[str, EffortProfile]:
               huginn:
                 enabled: true
                 checks: [collections]
+
+    Malformed sections degrade gracefully: a profile that is not a
+    mapping, a layer mapping that is null or not a mapping, or an
+    effort_levels section that is not a mapping is skipped with a
+    stderr warning while the rest of the config still loads. One bad
+    YAML line never kills the whole loader.
     """
     if not path.is_file():
         if path.exists():
@@ -215,13 +221,64 @@ def load_profiles_from_yaml(path: Path) -> Dict[str, EffortProfile]:
     with open(path) as f:
         raw = yaml.safe_load(f) or {}
 
+    if not isinstance(raw, dict):
+        print(
+            f"Warning: YAML layer config {path} has a non-mapping document "
+            f"({type(raw).__name__}) — ignoring it.",
+            file=sys.stderr,
+        )
+        return {}
+
+    effort_levels = raw.get("effort_levels", {})
+    if not isinstance(effort_levels, dict):
+        print(
+            f"Warning: YAML layer config {path}: 'effort_levels' is "
+            f"{type(effort_levels).__name__}, not a mapping — ignoring it.",
+            file=sys.stderr,
+        )
+        effort_levels = {}
+
     profiles = {}
-    for name, cfg in raw.get("effort_levels", {}).items():
+    for name, cfg in effort_levels.items():
+        if not isinstance(cfg, dict):
+            print(
+                f"Warning: YAML layer config {path}: profile {name!r} is "
+                f"{type(cfg).__name__}, not a mapping — skipping that profile.",
+                file=sys.stderr,
+            )
+            continue
+        raw_layers = cfg.get("layers", {})
+        if not isinstance(raw_layers, dict):
+            print(
+                f"Warning: YAML layer config {path}: profile {name!r} has a "
+                f"non-mapping 'layers' section "
+                f"({type(raw_layers).__name__}) — loading it with no layers.",
+                file=sys.stderr,
+            )
+            raw_layers = {}
         layers = {}
-        for layer_name, layer_cfg in cfg.get("layers", {}).items():
+        for layer_name, layer_cfg in raw_layers.items():
+            if not isinstance(layer_cfg, dict):
+                print(
+                    f"Warning: YAML layer config {path}: profile {name!r} "
+                    f"layer {layer_name!r} is "
+                    f"{type(layer_cfg).__name__}, not a mapping — "
+                    f"skipping that layer.",
+                    file=sys.stderr,
+                )
+                continue
+            checks = layer_cfg.get("checks", [])
+            if not isinstance(checks, list):
+                print(
+                    f"Warning: YAML layer config {path}: profile {name!r} "
+                    f"layer {layer_name!r} has a non-list 'checks' section "
+                    f"({type(checks).__name__}) — using no checks.",
+                    file=sys.stderr,
+                )
+                checks = []
             layers[layer_name] = LayerConfig(
                 enabled=layer_cfg.get("enabled", True),
-                checks=layer_cfg.get("checks", []),
+                checks=checks,
             )
         profiles[name] = EffortProfile(
             name=name,

@@ -81,18 +81,31 @@ def _parse_ts(value):
 
 
 def _read_jsonl(path):
+    """Read JSONL rows, keeping only dict-shaped ones.
+
+    A valid JSON array, string, or number on a line is not a row — it is
+    skipped LOUDLY so corruption is visible instead of crashing readers
+    that do row["field"] / row.get("field")."""
     rows = []
     if not os.path.exists(path):
         return rows
     with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
+        for lineno, line in enumerate(fh, start=1):
+            text = line.strip()
+            if not text:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(text)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(row, dict):
+                print(
+                    f"joy_ledger: skipping non-dict row {lineno} in {path}: "
+                    f"{type(row).__name__} (valid JSON, not a record)",
+                    file=sys.stderr,
+                )
+                continue
+            rows.append(row)
     return rows
 
 
