@@ -5,6 +5,7 @@ Covers: conversation logging, state snapshots, nerve firing,
         session lifecycle, edge cases.
 """
 
+import glob
 import json
 import os
 import sys
@@ -441,11 +442,18 @@ class TestQueryFunctions:
         assert state is None
 
     def test_get_current_state_corrupt_file(self, isolate_paths):
-        """Test get_current_state with corrupt JSON."""
+        """Test get_current_state with corrupt JSON.
+
+        Dusk S7 (S9): corrupt current.json is now LOUD — stderr warning plus
+        backup to current.json.corrupt.<ts> — and returns a fresh {} instead
+        of silently swallowing the failure (previously returned None with no
+        warning and no backup).
+        """
         with open(isolate_paths['current_file'], 'w') as f:
             f.write('{corrupt json')
         state = cl.get_current_state()
-        assert state is None
+        assert state == {}
+        assert len(glob.glob(str(isolate_paths['state_dir'] / 'current.json.corrupt.*'))) == 1
 
     def test_read_all_entries_with_corrupt_lines(self, isolate_paths):
         """Test that corrupt lines in JSONL are skipped."""

@@ -67,6 +67,86 @@ def _timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _warn_loud(msg: str):
+    """Corrupt-state warnings must be LOUD — never silently swallowed."""
+    print(f"⚠️  CONV-LOGGER: {msg}", file=sys.stderr)
+
+
+def _write_json_atomic(path: Path, obj) -> None:
+    """Write JSON atomically: tmp file + fsync + os.replace.
+
+    A crash mid-write can never leave a torn file at `path` — readers see
+    either the old complete state or the new complete state, never a
+    half-written one.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.tmp.{os.getpid()}.{os.urandom(4).hex()}"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(obj, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def _read_current_file() -> dict:
+    """Read current.json with loud, non-silent corrupt handling.
+
+    - Missing file → {} (nothing to lose, no warning).
+    - Truncated/corrupt JSON OR valid-JSON-wrong-type (e.g. `[]`) →
+      LOUD stderr warning + the bad file is backed up to
+      current.json.corrupt.<ts> before starting fresh. Never silently discards.
+    """
+    if not CURRENT_FILE.exists():
+        return {}
+    try:
+        with open(CURRENT_FILE) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError, OSError) as exc:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        backup = CURRENT_FILE.parent / f"current.json.corrupt.{ts}"
+        try:
+            os.replace(CURRENT_FILE, backup)  # move aside — no repeat warnings
+            backed_up = str(backup)
+        except OSError:
+            backed_up = "<backup failed>"
+        _warn_loud(
+            f"current.json is CORRUPT/TRUNCATED ({type(exc).__name__}: {exc}) — "
+            f"backed up to {backed_up}; starting fresh. Accumulated state was NOT preserved."
+        )
+        return {}
+    if not isinstance(data, dict):
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+        backup = CURRENT_FILE.parent / f"current.json.corrupt.{ts}"
+        try:
+            os.replace(CURRENT_FILE, backup)  # move aside — no repeat warnings
+            backed_up = str(backup)
+        except OSError:
+            backed_up = "<backup failed>"
+        _warn_loud(
+            f"current.json has WRONG TYPE ({type(data).__name__}, expected dict) — "
+            f"backed up to {backed_up}; starting fresh. Accumulated state was NOT preserved."
+        )
+        return {}
+    return data
+
+
+def _safe_text(value, default: str = "") -> str:
+    """Coerce an entry field to str for display — never crash on non-strings."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return default
+    return str(value)
+
+
 # Cached module reference — avoids re-importing on every event
 _nerve_module = None
 _nerve_module_path = None
@@ -118,13 +198,7 @@ def _append(entry: dict) -> dict:
 def _update_current(entry: dict, session_id: str):
     """Update current.json to reflect the latest state of the active session."""
     # Merge with existing current.json if it exists and is the same session
-    existing = {}
-    if CURRENT_FILE.exists():
-        try:
-            with open(CURRENT_FILE) as f:
-                existing = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+    existing = _read_current_file()
 
     # Build current state from entry
     current = {
@@ -148,8 +222,7 @@ def _update_current(entry: dict, session_id: str):
         if list_field not in current:
             current[list_field] = existing.get(list_field, [])
 
-    with open(CURRENT_FILE, "w") as f:
-        json.dump(current, f, indent=2, ensure_ascii=False)
+    _write_json_atomic(CURRENT_FILE, current)
 
 
 def cmd_start(args):
@@ -184,8 +257,7 @@ def cmd_start(args):
         "mood": "",
         "duration_minutes": 0,
     }
-    with open(CURRENT_FILE, "w") as f:
-        json.dump(current, f, indent=2, ensure_ascii=False)
+    _write_json_atomic(CURRENT_FILE, current)
 
     print(f"🟢 Session started: {args.session}")
     print(f"   {ts}")
@@ -210,13 +282,7 @@ def cmd_event(args):
     _append(entry)
 
     # Update current.json — accumulate into appropriate list field
-    current = {}
-    if CURRENT_FILE.exists():
-        try:
-            with open(CURRENT_FILE) as f:
-                current = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+    current = _read_current_file()
 
     # Map event types to current.json list fields
     field_map = {
@@ -235,10 +301,15 @@ def cmd_event(args):
         current["mood"] = args.content
     elif args.type == "blocker_resolved":
         # Remove from blockers list
-        current.setdefault("blockers", [])
-        current["blockers"] = [b for b in current["blockers"] if b != args.content]
+        blockers = current.get("blockers")
+        if not isinstance(blockers, list):
+            blockers = []
+        current["blockers"] = [b for b in blockers if b != args.content]
     elif field:
-        lst = current.setdefault(field, [])
+        lst = current.get(field)
+        if not isinstance(lst, list):
+            lst = []
+            current[field] = lst
         if args.content not in lst:
             lst.append(args.content)
 
@@ -246,8 +317,7 @@ def cmd_event(args):
         current["projects_touched"] = []
     current["last_updated"] = ts
 
-    with open(CURRENT_FILE, "w") as f:
-        json.dump(current, f, indent=2, ensure_ascii=False)
+    _write_json_atomic(CURRENT_FILE, current)
 
     print(f"📌 Event logged: {args.type} — {args.content[:80]}")
     return entry
@@ -256,13 +326,7 @@ def cmd_event(args):
 def cmd_update(args):
     """Update the session state snapshot. Can be called any time."""
     ts = _timestamp()
-    current = {}
-    if CURRENT_FILE.exists():
-        try:
-            with open(CURRENT_FILE) as f:
-                current = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+    current = _read_current_file()
 
     # Overwrite specified fields
     if args.next:
@@ -292,8 +356,7 @@ def cmd_update(args):
     }
     _append(entry)
 
-    with open(CURRENT_FILE, "w") as f:
-        json.dump(current, f, indent=2, ensure_ascii=False)
+    _write_json_atomic(CURRENT_FILE, current)
 
     print(f"🔄 State updated: {args.session}")
     return entry
@@ -302,13 +365,7 @@ def cmd_update(args):
 def cmd_end(args):
     """Close a session. Writes final entry and finalizes current.json."""
     ts = _timestamp()
-    current = {}
-    if CURRENT_FILE.exists():
-        try:
-            with open(CURRENT_FILE) as f:
-                current = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+    current = _read_current_file()
 
     # Calculate duration if we have start_time
     duration = args.duration or 0
@@ -346,8 +403,7 @@ def cmd_end(args):
     current["duration_minutes"] = duration
     if args.summary:
         current["summary"] = args.summary
-    with open(CURRENT_FILE, "w") as f:
-        json.dump(current, f, indent=2, ensure_ascii=False)
+    _write_json_atomic(CURRENT_FILE, current)
 
     print(f"🏁 Session closed: {args.session}")
     print(f"   Duration: {duration} min")
@@ -366,17 +422,21 @@ def cmd_show(args):
 
     print(f"=== Session: {args.session} ===")
     for e in entries:
-        et = e.get("entry_type", "?")
-        ts = e.get("timestamp", "?")[:19]
+        et = _safe_text(e.get("entry_type", "?"), "?")
+        ts = _safe_text(e.get("timestamp", "?"), "?")[:19]
         if et == "start":
-            print(f"  🟢 START  {ts}  {e.get('summary', '')[:80]}")
+            print(f"  🟢 START  {ts}  {_safe_text(e.get('summary', ''))[:80]}")
         elif et == "end":
-            print(f"  🏁 END    {ts}  {e.get('summary', '')[:80]}  ({e.get('duration_minutes', 0)} min)")
+            print(f"  🏁 END    {ts}  {_safe_text(e.get('summary', ''))[:80]}  ({e.get('duration_minutes', 0)} min)")
         elif et == "event":
-            evt = e.get("event_type", "?")
-            print(f"  📌 {evt:20} {ts}  {e.get('content', '')[:80]}")
+            evt = _safe_text(e.get("event_type", "?"), "?")
+            content = _safe_text(e.get("content", ""))
+            print(f"  📌 {evt:20} {ts}  {content[:80]}")
         elif et == "update":
-            print(f"  🔄 UPDATE {ts}  next={e.get('next_actions', [])[:3]}")
+            next_actions = e.get("next_actions", [])
+            if not isinstance(next_actions, list):
+                next_actions = [next_actions]
+            print(f"  🔄 UPDATE {ts}  next={next_actions[:3]}")
         else:
             print(f"  ❓ {et:20} {ts}")
 
@@ -390,10 +450,10 @@ def cmd_recent(args):
 
     print(f"=== Recent {len(entries)} sessions ===")
     for e in entries:
-        ts = e.get("timestamp", "?")[:16]
-        sid = e.get("session_id", "?")
-        summ = e.get("summary", "")[:80]
-        status = e.get("entry_type", "?")
+        ts = _safe_text(e.get("timestamp", "?"), "?")[:16]
+        sid = _safe_text(e.get("session_id", "?"), "?")
+        summ = _safe_text(e.get("summary", ""))[:80]
+        status = _safe_text(e.get("entry_type", "?"), "?")
         marker = {"start": "🟢", "end": "🏁", "event": "📌", "update": "🔄"}.get(status, "❓")
         print(f"  {marker} {ts} [{sid}] {summ}")
 
@@ -449,29 +509,23 @@ def get_context_for_cron(max_sessions: int = 5) -> str:
     recent = _get_recent_sessions(max_sessions)
 
     # Also get current state
-    current = None
-    if CURRENT_FILE.exists():
-        try:
-            with open(CURRENT_FILE) as f:
-                current = json.load(f)
-        except (json.JSONDecodeError, IOError):
-            pass
+    current = _read_current_file()
 
     lines = ["=== RUNA SESSION CONTEXT (auto-injected) ==="]
 
     if current:
-        lines.append(f"Active session: {current.get('session_id', 'unknown')}")
-        lines.append(f"Status: {current.get('status', 'unknown')}")
-        lines.append(f"Last updated: {current.get('last_updated', 'unknown')}")
-        lines.append(f"Summary: {current.get('summary', 'none')[:120]}")
+        lines.append(f"Active session: {_safe_text(current.get('session_id', 'unknown'), 'unknown')}")
+        lines.append(f"Status: {_safe_text(current.get('status', 'unknown'), 'unknown')}")
+        lines.append(f"Last updated: {_safe_text(current.get('last_updated', 'unknown'), 'unknown')}")
+        lines.append(f"Summary: {_safe_text(current.get('summary', 'none'), 'none')[:120]}")
         if current.get("decisions"):
-            lines.append(f"Decisions: {'; '.join(current['decisions'][:5])}")
+            lines.append(f"Decisions: {'; '.join(str(d) for d in current['decisions'][:5])}")
         if current.get("next_actions"):
-            lines.append(f"Next actions: {'; '.join(current['next_actions'][:5])}")
+            lines.append(f"Next actions: {'; '.join(str(a) for a in current['next_actions'][:5])}")
         if current.get("blockers"):
-            lines.append(f"Blockers: {'; '.join(current['blockers'])}")
+            lines.append(f"Blockers: {'; '.join(str(b) for b in current['blockers'])}")
         if current.get("projects_touched"):
-            lines.append(f"Projects touched: {', '.join(current['projects_touched'])}")
+            lines.append(f"Projects touched: {', '.join(str(p) for p in current['projects_touched'])}")
 
     if recent:
         lines.append(f"\n--- Recent {len(recent)} sessions ---")
@@ -536,11 +590,8 @@ def get_current_state() -> dict | None:
     """Read the current state file (public API for context_injector and cron jobs)."""
     if not CURRENT_FILE.exists():
         return None
-    try:
-        with open(CURRENT_FILE) as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError):
-        return None
+    # Corrupt/wrong-type files get the loud backup-and-fresh-start treatment.
+    return _read_current_file()
 
 
 def get_recent_conversations(n: int = 10) -> list[dict]:
