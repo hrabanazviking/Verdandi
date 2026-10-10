@@ -84,14 +84,24 @@ class VörAction(BaseAction):
 
         return False
 
-    def execute(self, context: ActionContext) -> ActionResult:
-        """Execute pre-emptive healing actions based on prediction data."""
+    def _execute(self, context: ActionContext) -> ActionResult:
+        """Execute pre-emptive healing actions based on prediction data.
+
+        Runs under BaseAction.execute()'s guards: dry-run routing,
+        duration tracking, cooldown registration, exception catching,
+        and audit logging.
+        """
         actions_taken = []
         errors = []
 
         # 1. Disk pre-emptive cleanup
         capacity = self._get_capacity_prediction(context)
         for resource, pred in capacity.items():
+            # capacity may carry status strings ("insufficient_data",
+            # "minimum_required") alongside per-resource prediction dicts —
+            # only dicts have an urgency (same guard as skuld.py uses).
+            if not isinstance(pred, dict):
+                continue
             if resource == "disk" and pred.get("urgency") in ("critical", "warning"):
                 result = self._preemptive_disk_cleanup(context)
                 if result:
@@ -124,8 +134,8 @@ class VörAction(BaseAction):
 
         if not actions_taken and not errors:
             return ActionResult(
-                name=self.name,
-                severity=ActionSeverity.INFO,
+                action_name=self.name,
+                severity=ActionSeverity.SKIPPED,
                 message="No pre-emptive actions needed at this time",
                 details={"skuld_predictions": self._get_capacity_summary(context)},
             )
@@ -136,7 +146,7 @@ class VörAction(BaseAction):
             message += f", {len(errors)} errors"
 
         return ActionResult(
-            name=self.name,
+            action_name=self.name,
             severity=severity,
             message=message,
             details={
@@ -154,11 +164,16 @@ class VörAction(BaseAction):
         return {}
 
     def _get_capacity_summary(self, context: ActionContext) -> dict:
-        """Get a summary of capacity predictions."""
+        """Get a summary of capacity predictions.
+
+        Skips non-dict capacity entries (e.g. "status" strings like
+        "insufficient_data") — same guard the :69-analogous path uses.
+        """
         capacity = self._get_capacity_prediction(context)
         return {
             resource: pred.get("prediction", "unknown")
             for resource, pred in capacity.items()
+            if isinstance(pred, dict)
         }
 
     def _check_cooldown(self, action_type: str) -> bool:
