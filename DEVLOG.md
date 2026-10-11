@@ -1,5 +1,86 @@
 # DEVLOG — Verðandi
 
+## 2026-10-11 — Forge run verdandi-dawn-forge (04:32 EDT) — "The Unbroken Thread"
+
+Third forge run (dawn slot is now the sole daily Verdandi forge — dusk slot
+retired 2026-10-11 per the halved cadence). Theme: the system's inner state
+never lies and never dies silently. Two read-only recon workers reproduced
+23 defects with real runs against tmp dirs (a third worker's 12 findings for
+autobiography/worlds/ttrpg/rituals arrived after carving — they seed the
+next run); Sólrún consolidated to 20 slices, killing the stale-write race
+slice (needs CAS, not safely fixable in one slice).
+
+Baseline: 1001 passed / 4 skipped / 1 flaky (test_pulse_command_exits_zero —
+environmental, fails 3/3 at the pre-forge baseline commit too).
+Result: **1064 passed / 0 failed / 4 skipped** (+63 new tests; the same
+pre-existing flake excluded).
+
+### Nerve hub integrity (slices 3–5)
+- `nervous_system.py`: a single frame bigger than the reader limit raised
+  bare ValueError (3.12) → client got RST, no error frame. Now the hub
+  drains the hostile frame, then answers the structured
+  `{"nerve_type":"error","reason":"message_too_large"}` — no traceback, hub
+  keeps serving. (The drain-first matters: closing with unread megabytes
+  turns into an RST that eats the error frame.)
+- Quiet subscribers (the documented `subscribe` use case) were booted after
+  SUBSCRIBER_TIMEOUT_S of silence. The hub now proves liveness with a
+  keepalive `ping` instead; a dead peer fails the write and is dropped.
+  The `subscribe` CLI skips the new server ping as control chatter.
+- `cmd_stop` sends SIGTERM for "graceful shutdown", but the default SIGTERM
+  action killed the process before the drain path ran — subscribers never
+  got the documented `shutdown` frame. serve() now routes SIGTERM into the
+  shutdown event so the drain executes.
+
+### Runa feeling, honestly wired (slices 1, 2, 9–11)
+- `runa_mood_arousal_system.py`: `integrate_reward/negative_system` read
+  stat keys the writers never emit — a silent no-op. Now reads the real
+  `stats.total_rewards/total_negatives/total_intensity`, so mood actually
+  reflects reward history. `load_state` survives non-dict/wrong-shaped JSON
+  (loud warning, baselines); `save_state` is atomic.
+- `runa_reward_system.py` / `runa_negative_system.py`: corrupt DBs crashed
+  every entry point — now fall back to empty history LOUDLY and rewrite a
+  valid DB; history lists capped at 500 (stats stay cumulative); saves are
+  atomic. The dead nerve-emit path (`sys.path.insert(~/.hermes/state)`,
+  where nervous_system can never exist) now resolves from the repo root —
+  reward/negative events actually reach the nerve.
+- `push_reward.py`: unknown tier raised bare KeyError — now ValueError
+  naming the valid tiers.
+
+### CLI honesty (slice 12)
+- Six CLIs (`mood_work`, `wishlist`, `muse_aspects`, `morning_mirror`,
+  `mythic_engineering`, `runa_mood_arousal_system`): domain errors escaped
+  as tracebacks with exit 1. Now every invalid invocation exits 2 with a
+  single-line human-readable stderr message.
+
+### State honesty (slices 13–20)
+- `muse_aspects.py` HugrMood: load is all-or-nothing (any bad field rejects
+  the whole file loudly — no more silent partial merges); save() atomic.
+  `GefanRewards.record`: `extra` may add namespaced fields but can no
+  longer clobber core fields (trigger/ts) — forgery raises ValueError.
+  `status()` skips malformed rows and reports the skipped counts.
+- Corrupt state JSON is quarantined (`<name>.corrupt-<ts>`) with a loud
+  stderr warning instead of being silently destroyed on next write:
+  `mood_work`, `wishlist`, `self_recognition`, `mythic_engineering`.
+- `mood_work`: finished-session rows are validated on read; malformed rows
+  are skipped and counted (`correlate()["skipped_malformed"]`, CLI log
+  notes it) instead of KeyError-killing the read path.
+- `morning_mirror`: naive timestamps are assumed UTC (same contract as
+  `probe_due`) — the 48h citation window no longer shifts with TZ;
+  `gather()` filters the FULL log by window before capping (recent(20)
+  first was silently dropping real in-window evidence).
+- `self_recognition.set_anchors`: non-string anchors raise the module's own
+  ValueError, never AttributeError.
+- `mythic_engineering.audit`: a non-git repo dir now yields a labeled
+  `unbroken_whole` violation — never again a vacuous "all Sacred Laws hold"
+  for unversioned code.
+- `MoodWork`/`Wishlist` honor `MUSE_ASPECTS_STATE_DIR` — no more split-brain
+  with the mood file MuseAspects/MorningMirror read.
+
+### Incidents
+- VM RAM pressure critical this run (95–97% used, ~250–500MB available;
+  no swap). Full suite still completed in ~95s. No OOM.
+- No external hard-reset actor observed this run — all commits persisted.
+
 ## 2026-10-10 — Forge run verdandi-dusk-forge (16:32 EDT) — "The Kept Oath"
 
 Second forge run. Theme: the system's inner promises kept true. Dawn run
