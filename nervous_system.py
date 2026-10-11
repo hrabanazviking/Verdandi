@@ -233,8 +233,53 @@ class NerveHub:
                 try:
                     data = await asyncio.wait_for(reader.readline(), timeout=SUBSCRIBER_TIMEOUT_S)
                 except asyncio.TimeoutError:
+                    if writer in self.subscribers:
+                        # Dawn S4: a quiet subscriber is the documented use
+                        # case (the `subscribe` CLI only ever listens). Prove
+                        # liveness with a keepalive ping instead of booting
+                        # it; a dead peer fails the write and is dropped.
+                        try:
+                            writer.write(json.dumps({
+                                'nerve_type': 'ping',
+                                'ts': time.time(),
+                            }).encode() + b'\n')
+                            await asyncio.wait_for(writer.drain(), timeout=5)
+                        except (ConnectionError, OSError, asyncio.TimeoutError):
+                            log_msg(f"Subscriber {addr} failed keepalive — disconnecting")
+                            break
+                        self.subscriber_times[writer] = time.time()
+                        continue
                     # Client hasn't sent anything in a while — disconnect
                     log_msg(f"Client {addr} timed out (no data for {SUBSCRIBER_TIMEOUT_S}s)")
+                    break
+                except (ValueError, asyncio.LimitOverrunError):
+                    # Dawn S3: a single frame bigger than the reader limit
+                    # (no newline within it) raises here — ValueError on
+                    # 3.12, LimitOverrunError on older Pythons. Route it
+                    # through the structured rejection, never a traceback.
+                    log_msg(f"Oversized frame from {addr} exceeded reader limit — draining and closing")
+                    # Drain the rest of the hostile frame first: as long as
+                    # megabytes sit unread in our receive buffer, close()
+                    # turns into an RST that eats the error frame (and the
+                    # sender's drain can never complete). Stop when the
+                    # sender goes quiet.
+                    try:
+                        while True:
+                            chunk = await asyncio.wait_for(reader.read(65536), timeout=1.0)
+                            if not chunk:
+                                break
+                    except asyncio.TimeoutError:
+                        pass
+                    except (ConnectionError, OSError):
+                        pass
+                    try:
+                        writer.write(json.dumps({
+                            'nerve_type': 'error',
+                            'reason': 'message_too_large'
+                        }).encode() + b'\n')
+                        await writer.drain()
+                    except (ConnectionError, OSError):
+                        pass
                     break
 
                 if not data:
@@ -533,6 +578,16 @@ class NerveHub:
         tmp_pid.rename(PID_PATH)
 
         self._shutdown_event = asyncio.Event()
+
+        # Dawn S5: cmd_stop sends SIGTERM for "graceful shutdown", but the
+        # default SIGTERM action killed the process before the drain path
+        # below could run. Route SIGTERM into the shutdown event so the
+        # documented graceful path (shutdown frame + drain log) executes.
+        try:
+            _loop = asyncio.get_running_loop()
+            _loop.add_signal_handler(signal.SIGTERM, self._shutdown_event.set)
+        except (NotImplementedError, RuntimeError):
+            log_msg("SIGTERM graceful-shutdown handler unavailable on this platform")
 
         log_msg(f"Nerve Hub started (PID {pid})")
         print(f"🧠 Nerve Hub started on {SOCKET_PATH}")
@@ -909,7 +964,7 @@ async def subscribe():
                 if nerve_type == 'shutdown':
                     print(f"\n🛑 Hub shutting down: {event.get('message', '')}", flush=True)
                     break
-                if nerve_type in ('pong', 'ack', 'recent_events'):
+                if nerve_type in ('pong', 'ping', 'ack', 'recent_events'):
                     continue
                 ts = event.get('_iso', '?')
                 seq = event.get('_seq', '?')
