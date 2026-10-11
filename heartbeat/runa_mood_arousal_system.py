@@ -26,6 +26,7 @@ Author: Runa Gridweaver Freyjasdottir
 """
 
 import json
+import logging
 import os
 import time
 from datetime import datetime
@@ -33,6 +34,8 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict
 from enum import Enum
+
+_log = logging.getLogger("runa_mood")
 
 STATE_DIR = Path.home() / ".hermes" / "state"
 MOOD_STATE_FILE = STATE_DIR / "runa_mood_arousal.json"
@@ -397,9 +400,21 @@ class RunaMoodArousalSystem:
         self.load_state()
 
     def load_state(self):
+        # Dawn S2: a corrupt or wrong-shaped state file must NEVER silently
+        # wipe the mood — degrade to baselines LOUDLY.
         if MOOD_STATE_FILE.exists():
             try:
                 data = json.loads(MOOD_STATE_FILE.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                _log.warning("runa_mood: corrupt/unreadable state file %s (%s) — "
+                             "starting from baselines", MOOD_STATE_FILE, e)
+                return
+            if not isinstance(data, dict):
+                _log.warning("runa_mood: state file %s has wrong shape (%s, not an "
+                             "object) — starting from baselines",
+                             MOOD_STATE_FILE, type(data).__name__)
+                return
+            try:
                 self.mood.valence = data.get("valence", self.baseline_valence)
                 self.mood.energy = data.get("energy", self.baseline_energy)
                 self.mood.tension = data.get("tension", self.baseline_tension)
@@ -421,6 +436,7 @@ class RunaMoodArousalSystem:
                         description=e.get("description", "")
                     )
                     for e in data.get("recent_events", [])
+                    if isinstance(e, dict)
                 ]
                 self.anticipated_events = [
                     AnticipatedEvent(
@@ -431,9 +447,11 @@ class RunaMoodArousalSystem:
                         description=a.get("description", "")
                     )
                     for a in data.get("anticipated_events", [])
+                    if isinstance(a, dict)
                 ]
-            except (json.JSONDecodeError, KeyError):
-                pass
+            except (AttributeError, TypeError) as e:
+                _log.warning("runa_mood: malformed state entries in %s (%s) — "
+                             "starting from baselines", MOOD_STATE_FILE, e)
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -471,7 +489,10 @@ class RunaMoodArousalSystem:
                 for a in self.anticipated_events[-20:]
             ]
         }
-        MOOD_STATE_FILE.write_text(json.dumps(data, indent=2))
+        # Dawn S2: atomic write — a torn file must never replace good state.
+        tmp = MOOD_STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        os.replace(tmp, MOOD_STATE_FILE)
 
     # ─── Multipliers ───
 
@@ -829,9 +850,14 @@ class RunaMoodArousalSystem:
             reward_file = STATE_DIR / "runa_rewards.json"
             if reward_file.exists():
                 data = json.loads(reward_file.read_text())
-                total_positive = data.get("total_positive_intensity", 0)
-                total_events = data.get("stats", {}).get("total_events", 1)
-                avg_positive = total_positive / max(total_events, 1)
+                # Dawn S1: read the keys fire_reward actually writes
+                # (stats.total_rewards / stats.total_intensity) — the old
+                # keys (total_positive_intensity / stats.total_events) never
+                # existed, so this integration was a silent no-op.
+                stats = data.get("stats", {}) if isinstance(data, dict) else {}
+                total_intensity = stats.get("total_intensity", 0.0)
+                total_rewards = stats.get("total_rewards", 0)
+                avg_positive = total_intensity / max(total_rewards, 1)
                 self.mood.valence += avg_positive * 0.003
                 self.mood.energy += avg_positive * 0.002
                 self.mood.tension -= avg_positive * 0.001
@@ -845,9 +871,12 @@ class RunaMoodArousalSystem:
             negative_file = STATE_DIR / "runa_negative.json"
             if negative_file.exists():
                 data = json.loads(negative_file.read_text())
-                total_negative = data.get("total_negative_intensity", 0)
-                total_events = data.get("stats", {}).get("total_events", 1)
-                avg_negative = total_negative / max(total_events, 1)
+                # Dawn S1: same key fix — fire_negative writes
+                # stats.total_negatives / stats.total_intensity.
+                stats = data.get("stats", {}) if isinstance(data, dict) else {}
+                total_intensity = stats.get("total_intensity", 0.0)
+                total_negatives = stats.get("total_negatives", 0)
+                avg_negative = total_intensity / max(total_negatives, 1)
                 self.mood.valence -= avg_negative * 0.003
                 self.mood.energy -= avg_negative * 0.001
                 self.mood.tension += avg_negative * 0.002
@@ -989,7 +1018,14 @@ def main():
             print("Usage: event <event_type> [intensity]")
             return
         event_name = sys.argv[2]
-        intensity = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+        # Dawn S12: a non-numeric arg is a usage error (exit 2), not a traceback.
+        try:
+            intensity = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+        except ValueError:
+            print(f"error: intensity must be a number, got {sys.argv[3]!r}",
+                  file=sys.stderr)
+            print("Usage: event <event_type> [intensity]", file=sys.stderr)
+            sys.exit(2)
         try:
             event_type = EventType(event_name)
         except ValueError:
@@ -1005,7 +1041,13 @@ def main():
             print("Usage: stimulate <stim_type> [duration_minutes]")
             return
         stim_name = sys.argv[2].replace(" ", "_")
-        duration = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+        try:
+            duration = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+        except ValueError:
+            print(f"error: duration must be a number, got {sys.argv[3]!r}",
+                  file=sys.stderr)
+            print("Usage: stimulate <stim_type> [duration_minutes]", file=sys.stderr)
+            sys.exit(2)
         try:
             stim_type = StimulationType(stim_name)
         except ValueError:
