@@ -357,6 +357,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # Dawn S12: domain errors are usage errors (exit 2), not tracebacks.
+    try:
+        _main_impl(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+def _main_impl(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     aspects = MuseAspects()
 

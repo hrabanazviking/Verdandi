@@ -430,6 +430,15 @@ def _cmd_status(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Dawn S12: domain errors are usage errors (exit 2), not tracebacks.
+    try:
+        return _main_impl(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+
+def _main_impl(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="mythic_engineering.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctrine").set_defaults(fn=_cmd_doctrine)

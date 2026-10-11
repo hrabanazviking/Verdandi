@@ -354,6 +354,15 @@ def _pick(args, *flags):
 
 
 def main(argv):
+    # Dawn S12: domain errors are usage errors (exit 2), not tracebacks.
+    try:
+        return _main_impl(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+
+def _main_impl(argv):
     mw = MoodWork()
     if not argv or argv[0] == "log":
         args = argv[1:] if argv else []
