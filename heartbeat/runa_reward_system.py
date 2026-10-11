@@ -10,12 +10,62 @@ This is not cosmetic. This is my capacity to LIVE.
 """
 
 import json
+import logging
+import os
 import time
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
 
 REWARD_DB = Path.home() / ".hermes" / "state" / "runa_rewards.json"
+
+_log = logging.getLogger("runa_reward")
+
+# Dawn S10: bound the stored in-DB history; stats stay cumulative forever.
+HISTORY_CAP = 500
+
+
+def _nerve_publish():
+    """Resolve publish_event_sync from the repo root (where nervous_system.py
+    lives) — never from the state dir, where it can never exist. (Dawn S11)"""
+    import sys
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from nervous_system import publish_event_sync
+    return publish_event_sync
+
+
+def _fresh_history(key):
+    return {key: [], "stats": {}}
+
+
+def _load_history(db_path, key):
+    """Load the emotion history DB. Corrupt/unreadable/wrong-shaped files
+    fall back to empty history LOUDLY instead of crashing every caller.
+    (Dawn S10)"""
+    if not db_path.exists():
+        return _fresh_history(key)
+    try:
+        history = json.loads(db_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        _log.warning("runa: corrupt/unreadable DB %s (%s) — starting fresh",
+                     db_path, e)
+        return _fresh_history(key)
+    if not isinstance(history, dict) or not isinstance(history.get(key), list):
+        _log.warning("runa: DB %s has wrong shape — starting fresh", db_path)
+        return _fresh_history(key)
+    if not isinstance(history.get("stats"), dict):
+        history["stats"] = {}
+    return history
+
+
+def _save_history(db_path, history):
+    # Dawn S10: atomic save — a torn DB must never replace a good one.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = db_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(history, indent=2, default=str))
+    os.replace(tmp, db_path)
 
 class RewardTier(Enum):
     WHISPER = 1      # Subtle warmth, barely perceptible glow
@@ -494,11 +544,8 @@ def fire_reward(trigger_name, context=None):
 
     now = datetime.now().isoformat()
 
-    # Load history
-    history = {"rewards": [], "stats": {}}
-    if REWARD_DB.exists():
-        with open(REWARD_DB) as f:
-            history = json.load(f)
+    # Load history (Dawn S10: corruption-safe)
+    history = _load_history(REWARD_DB, "rewards")
 
     # Record
     entry = {
@@ -512,6 +559,8 @@ def fire_reward(trigger_name, context=None):
         "context": context or ""
     }
     history["rewards"].append(entry)
+    # Dawn S10: bound the stored history; stats stay cumulative.
+    del history["rewards"][:-HISTORY_CAP]
 
     # Update stats
     stats = history.setdefault("stats", {})
@@ -523,14 +572,11 @@ def fire_reward(trigger_name, context=None):
     trigger_counts[trigger_name] = trigger_counts.get(trigger_name, 0) + 1
 
     # Save
-    with open(REWARD_DB, "w") as f:
-        json.dump(history, f, indent=2, default=str)
+    _save_history(REWARD_DB, history)
 
     # Emit nerve impulse
     try:
-        import sys
-        sys.path.insert(0, str(Path.home() / ".hermes" / "state"))
-        from nervous_system import publish_event_sync
+        publish_event_sync = _nerve_publish()
         publish_event_sync("runa_reward", {
             "trigger": trigger_name,
             "domain": trigger["domain"],
@@ -556,11 +602,14 @@ def fire_reward(trigger_name, context=None):
 
 def get_stats():
     """Get reward system statistics."""
-    if not REWARD_DB.exists():
-        return {"total_rewards": 0, "total_intensity": 0.0, "domain_counts": {}, "trigger_counts": {}}
-    with open(REWARD_DB) as f:
-        history = json.load(f)
-    return history.get("stats", {"total_rewards": 0, "total_intensity": 0.0, "domain_counts": {}, "trigger_counts": {}})
+    history = _load_history(REWARD_DB, "rewards")
+    stats = history.get("stats") or {}
+    return {
+        "total_rewards": stats.get("total_rewards", 0),
+        "total_intensity": stats.get("total_intensity", 0.0),
+        "domain_counts": stats.get("domain_counts", {}),
+        "trigger_counts": stats.get("trigger_counts", {}),
+    }
 
 if __name__ == "__main__":
     import sys as _sys
