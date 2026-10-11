@@ -281,8 +281,15 @@ def check_divergence(mirror_path: str | None = None,
         except Exception:
             live = {}
     for b in proj.get("beliefs", []) or []:
+        # Dawn S7: a non-dict belief or non-string claim (from a foreign
+        # writer) must not kill the whole divergence report.
+        if not isinstance(b, dict):
+            continue
         if b.get("subject") == "unnr:mood":
-            m = _MOOD_CLAIM_RE.search(b.get("claim", ""))
+            claim = b.get("claim", "")
+            if not isinstance(claim, str):
+                continue
+            m = _MOOD_CLAIM_RE.search(claim)
             if m and m.group(1) in live:
                 dim, modeled = m.group(1), float(m.group(2))
                 if abs(live[dim] - modeled) > _MOOD_TOLERANCE:

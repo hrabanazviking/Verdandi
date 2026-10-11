@@ -237,7 +237,21 @@ def check_stored_labels(state_dir: str | None = None,
     vw = _read_json(os.path.join(sdir, "volmarr_world.json")) or {}
     ceilings = {"told": 0.9, "observed": 0.8, "inferred": 0.7,
                 "assumed": 0.4}
-    for subject, claim in (vw.get("claims") or {}).items():
+    claims = vw.get("claims") or {}
+    # Dawn S8: wrong-shaped claims (a list, a string) must not kill the
+    # audit with AttributeError — report and move on.
+    if not isinstance(claims, dict):
+        findings.append({"check": "labels", "where": "volmarr_world:claims",
+                         "detail": f"claims has wrong shape "
+                                   f"({type(claims).__name__}), expected an object"})
+        return findings
+    for subject, claim in claims.items():
+        if not isinstance(claim, dict):
+            findings.append({"check": "labels",
+                             "where": f"volmarr_world:{subject}",
+                             "detail": f"claim has wrong shape "
+                                       f"({type(claim).__name__}), expected an object"})
+            continue
         where = f"volmarr_world:{subject}"
         if claim.get("world_id") != "heimr-volmarr":
             findings.append({"check": "labels", "where": where,
@@ -296,6 +310,13 @@ def _manifest_sources(state_dir: str | None = None
     except OSError:
         pass
     for ch in chapters:
+        # Dawn S8: a valid-JSON non-dict line (bare string, number) must be
+        # skipped loudly like torn lines — never abort the audit.
+        if not isinstance(ch, dict):
+            skipped += 1
+            print(f"reality_audit: skipping non-dict chapter line "
+                  f"({type(ch).__name__}) in {cp}", file=sys.stderr)
+            continue
         text = ch.get("text", "")
         if text:
             out.append((f"autobiography:{ch.get('title', '?')}", text))

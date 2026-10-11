@@ -70,7 +70,21 @@ WYRD_REPO = os.environ.get(
 # keeps everything. Measured replay cost is ~11µs/event, so even a
 # 10k-event window replays in ~0.1s — the horizon is a semantic choice
 # (a living mirror), not a performance rescue.
-HORIZON_HOURS = float(os.environ.get("WYRD_BRIDGE_HORIZON_HOURS", "24"))
+def _parse_horizon_hours() -> float:
+    # Dawn S6: a garbage env value must never kill the import — warn and
+    # fall back to the default instead.
+    raw = os.environ.get("WYRD_BRIDGE_HORIZON_HOURS", "24")
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        import warnings
+        warnings.warn(
+            f"WYRD_BRIDGE_HORIZON_HOURS={raw!r} is not a number — "
+            f"falling back to 24.0")
+        return 24.0
+
+
+HORIZON_HOURS = _parse_horizon_hours()
 
 
 class WyrdUnavailableError(ImportError):
