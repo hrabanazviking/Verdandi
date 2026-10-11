@@ -164,11 +164,15 @@ def test_status_shape(tmp_state):
     aspects.shadow.record("task_failed", "relay test flaked")
     status = aspects.status()
     assert set(status) == {"mood", "rewards_recorded", "shadow_signals",
-                           "recent_rewards", "recent_shadow"}
+                           "recent_rewards", "recent_shadow",
+                           "malformed_rewards_skipped",
+                           "malformed_shadow_skipped"}
     assert status["rewards_recorded"] == 1
     assert status["shadow_signals"] == 1
     assert status["recent_rewards"] == ["user_delight"]
     assert status["recent_shadow"] == ["task_failed"]
+    assert status["malformed_rewards_skipped"] == 0
+    assert status["malformed_shadow_skipped"] == 0
 
 
 def test_facade_shares_one_mood(tmp_state):

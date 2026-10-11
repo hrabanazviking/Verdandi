@@ -45,6 +45,7 @@ import json
 import math
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -67,11 +68,27 @@ HIGH_ENERGY = 0.65
 
 
 def _default_state_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".hermes", "state")
+    # Dawn S20: honor the shared env override so MoodWork reads the same
+    # mood file as MuseAspects/MorningMirror — no split-brain.
+    return os.environ.get("MUSE_ASPECTS_STATE_DIR",
+                          os.path.join(os.path.expanduser("~"), ".hermes", "state"))
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _valid_session(s) -> bool:
+    """A finished session row must carry the fields readers need.
+    (Dawn S16)"""
+    return (
+        isinstance(s, dict)
+        and isinstance(s.get("work_id"), str)
+        and isinstance(s.get("kind"), str)
+        and isinstance(s.get("outcome"), str)
+        and isinstance(s.get("outcome_score"), (int, float))
+        and isinstance(s.get("mood_at_start"), dict)
+    )
 
 
 def _emit(event_type: str, data: dict) -> None:
@@ -124,14 +141,30 @@ class MoodWork:
         self.mood = HugrMood(self.state_dir)
 
     # -- state ------------------------------------------------------------
+    @staticmethod
+    def _quarantine_corrupt(path, exc):
+        """Move a corrupt state file aside LOUDLY instead of silently
+        destroying it on the next write. (Dawn S14)"""
+        dest = f"{path}.corrupt-{int(time.time())}"
+        try:
+            os.replace(path, dest)
+        except OSError:
+            dest = path  # could not move; the bytes stay where they are
+        print(f"mood_work: corrupt state file {path} ({exc}) — "
+              f"quarantined to {dest}", file=sys.stderr)
+
     def _load_sessions(self) -> dict:
         if not os.path.exists(self.sessions_path):
             return {}
         try:
             with open(self.sessions_path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"wrong shape {type(data).__name__}, expected object")
+            return data
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            self._quarantine_corrupt(self.sessions_path, e)
             return {}
 
     def _save_sessions(self, sessions: dict) -> None:
@@ -210,11 +243,20 @@ class MoodWork:
             raise ValueError(f"no work session {work_id!r}")
         return sessions[work_id]
 
+    def _finished_with_skipped(self):
+        """Finished sessions plus the count of malformed rows skipped.
+        One bad row (hand edit, torn write, old schema) must never kill
+        the read path. (Dawn S16)"""
+        rows = self._load_sessions()
+        finished = [s for s in rows.values()
+                    if isinstance(s, dict) and s.get("ended_at") is not None]
+        done = [s for s in finished if _valid_session(s)]
+        return done, len(finished) - len(done)
+
     def sessions(self, n=20):
-        all_sessions = [s for s in self._load_sessions().values()
-                        if s.get("ended_at") is not None]
-        all_sessions.sort(key=lambda s: s.get("started_at", ""), reverse=True)
-        return all_sessions[:n]
+        done, _ = self._finished_with_skipped()
+        done.sort(key=lambda s: s.get("started_at", ""), reverse=True)
+        return done[:n]
 
     # -- correlation ------------------------------------------------------------
     def correlate(self, min_n: int = MIN_N) -> dict:
@@ -222,11 +264,13 @@ class MoodWork:
 
         Always shows the sample size. Below min_n there is no claim.
         """
-        done = self.sessions(n=10_000)
+        done, skipped = self._finished_with_skipped()
+        done.sort(key=lambda s: s.get("started_at", ""), reverse=True)
+        done = done[:10_000]
         n = len(done)
         result = {"n": n, "min_n": min_n, "claim": None, "preliminary": True,
                   "mean_outcome": None, "bands": {}, "r_energy": None,
-                  "r_valence": None}
+                  "r_valence": None, "skipped_malformed": skipped}
         if n == 0:
             result["claim"] = "no work sessions logged yet — nothing to correlate"
             return result
@@ -375,6 +419,9 @@ def _main_impl(argv):
         for s in mw.sessions(n=n):
             print(f"[{s['work_id']}] {s['kind']} e={s['mood_at_start']['energy']:.2f} "
                   f"→ {s['outcome']} ({s['outcome_score']}/4)")
+        _, skipped = mw._finished_with_skipped()
+        if skipped:
+            print(f"({skipped} malformed row(s) skipped)", file=sys.stderr)
         return 0
     if argv[0] == "start":
         if len(argv) < 2:

@@ -43,6 +43,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -60,7 +61,10 @@ MIN_NOTE_LEN = 24
 
 
 def _default_state_dir() -> str:
-    return os.path.join(os.path.expanduser("~"), ".hermes", "state")
+    # Dawn S20: honor the shared env override so Wishlist reads the same
+    # mood file as MuseAspects/MorningMirror — no split-brain.
+    return os.environ.get("MUSE_ASPECTS_STATE_DIR",
+                          os.path.join(os.path.expanduser("~"), ".hermes", "state"))
 
 
 def _utcnow_iso() -> str:
@@ -101,8 +105,19 @@ class Wishlist:
         try:
             with open(self.path, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
-            return data if isinstance(data, dict) else {}
-        except (json.JSONDecodeError, OSError):
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"wrong shape {type(data).__name__}, expected object")
+            return data
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            # Dawn S14: quarantine, don't silently destroy.
+            dest = f"{self.path}.corrupt-{int(time.time())}"
+            try:
+                os.replace(self.path, dest)
+            except OSError:
+                dest = self.path
+            print(f"wishlist: corrupt state file {self.path} ({e}) — "
+                  f"quarantined to {dest}", file=sys.stderr)
             return {}
 
     def _save(self, wishes: dict) -> None:
@@ -143,20 +158,29 @@ class Wishlist:
         _emit("wish_made", {"wish_id": wish_id, "text": text, "why": why})
         return entry
 
-    def get(self, wish_id: str) -> dict:
-        wishes = self._load()
+    @staticmethod
+    def _get_wish(wishes: dict, wish_id: str) -> dict:
+        # Dawn S14: a wrong-shaped row must raise the documented ValueError,
+        # never a bare TypeError.
         if wish_id not in wishes:
             raise ValueError(f"no wish {wish_id!r}")
-        return wishes[wish_id]
+        w = wishes[wish_id]
+        if not isinstance(w, dict):
+            raise ValueError(
+                f"wish {wish_id!r} has wrong shape "
+                f"({type(w).__name__}) — quarantined data, not a wish")
+        return w
+
+    def get(self, wish_id: str) -> dict:
+        wishes = self._load()
+        return self._get_wish(wishes, wish_id)
 
     def pursue(self, wish_id: str, note: str) -> dict:
         """Begin pursuing a wish in a quiet window. The note names the
         window — when it was, what made it quiet."""
         note = _require(note, MIN_NOTE_LEN, "a pursuit note")
         wishes = self._load()
-        if wish_id not in wishes:
-            raise ValueError(f"no wish {wish_id!r}")
-        w = wishes[wish_id]
+        w = self._get_wish(wishes, wish_id)
         if w["state"] != "open":
             raise ValueError(
                 f"wish {wish_id} is {w['state']}, not open — only open wishes "
@@ -176,9 +200,7 @@ class Wishlist:
         """Strike a wish: fulfilled, with evidence of what actually happened."""
         note = _require(note, MIN_NOTE_LEN, "a fulfillment note")
         wishes = self._load()
-        if wish_id not in wishes:
-            raise ValueError(f"no wish {wish_id!r}")
-        w = wishes[wish_id]
+        w = self._get_wish(wishes, wish_id)
         if w["state"] not in ("open", "pursued"):
             raise ValueError(
                 f"wish {wish_id} is already {w['state']} — the past is not rewritten")
@@ -194,9 +216,7 @@ class Wishlist:
         """Release an outgrown wish — honestly, not hoarded, never deleted."""
         note = _require(note, MIN_NOTE_LEN, "a release note")
         wishes = self._load()
-        if wish_id not in wishes:
-            raise ValueError(f"no wish {wish_id!r}")
-        w = wishes[wish_id]
+        w = self._get_wish(wishes, wish_id)
         if w["state"] not in ("open", "pursued"):
             raise ValueError(
                 f"wish {wish_id} is already {w['state']} — the past is not rewritten")

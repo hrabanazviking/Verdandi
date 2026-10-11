@@ -38,10 +38,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import math
 import os
 import sys
 import time
+
+_log = logging.getLogger("muse_aspects")
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -112,24 +115,42 @@ class HugrMood:
         self._load()
 
     def _load(self) -> None:
+        # Dawn S13: all-or-nothing — any bad field rejects the WHOLE file
+        # loudly. A partial merge (real valence + baseline energy, no
+        # warning) is silent corruption, the exact "performed feeling" the
+        # roadmap forbids.
         self.state = dict(self.BASELINE)
         self.updated_at = time.time()
         if self.path.exists():
             try:
                 saved = json.loads(self.path.read_text(encoding="utf-8"))
+                if not isinstance(saved, dict):
+                    raise ValueError(f"wrong shape {type(saved).__name__}")
+                state = {}
                 for k in self.BASELINE:
                     if k in saved:
-                        self.state[k] = float(saved[k])
-                self.updated_at = float(saved.get("updated_at", self.updated_at))
-            except (json.JSONDecodeError, ValueError, OSError):
-                pass
+                        state[k] = float(saved[k])
+                    else:
+                        state[k] = self.BASELINE[k]
+                updated_at = float(saved.get("updated_at", self.updated_at))
+            except (json.JSONDecodeError, ValueError, TypeError, OSError) as e:
+                print(f"muse_aspects: corrupt mood file {self.path} ({e}) — "
+                      f"starting from baselines", file=sys.stderr)
+                _log.warning("corrupt mood file %s (%s) — baselines used",
+                             self.path, e)
+            else:
+                self.state = state
+                self.updated_at = updated_at
         self.drift()  # settle toward baseline for elapsed time before use
 
     def save(self) -> None:
+        # Dawn S13: atomic save — a torn file must never replace good state.
         self.state_dir.mkdir(parents=True, exist_ok=True)
         payload = dict(self.state)
         payload["updated_at"] = self.updated_at
-        self.path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, self.path)
 
     @staticmethod
     def _clamp(v: float, lo: float, hi: float) -> float:
@@ -225,6 +246,17 @@ class GefanRewards:
                 f"Known: {', '.join(sorted(REWARD_TRIGGERS))}"
             )
         dv, de, domain, desc = REWARD_TRIGGERS[trigger]
+        core_keys = {"ts", "trigger", "domain", "description", "note",
+                     "valence_delta", "energy_delta"}
+        # Dawn S18: extra may add namespaced fields (joy_ledger does), but a
+        # caller must never forge the trigger/ts of a logged reward — the
+        # audit trail would lie about what the mood deltas belong to.
+        if extra:
+            clashes = core_keys & set(extra)
+            if clashes:
+                raise ValueError(
+                    f"extra may not override core reward fields: "
+                    f"{', '.join(sorted(clashes))}")
         entry = {
             "ts": _utcnow(),
             "trigger": trigger,
@@ -322,12 +354,20 @@ class MuseAspects:
         self.shadow = SkuggiShadow(state_dir, self.mood)
 
     def status(self) -> dict:
+        # Dawn S16: one malformed row (hand edit, torn write) must not kill
+        # the whole read path — skip and count.
+        rewards = [r for r in self.rewards.recent(0)
+                   if isinstance(r, dict) and "trigger" in r]
+        shadows = [s for s in self.shadow.recent(0)
+                   if isinstance(s, dict) and "signal" in s]
         return {
             "mood": self.mood.snapshot()["mood"],
             "rewards_recorded": self.rewards.count(),
             "shadow_signals": self.shadow.count(),
-            "recent_rewards": [r["trigger"] for r in self.rewards.recent(3)],
-            "recent_shadow": [s["signal"] for s in self.shadow.recent(3)],
+            "recent_rewards": [r["trigger"] for r in rewards[-3:]],
+            "recent_shadow": [s["signal"] for s in shadows[-3:]],
+            "malformed_rewards_skipped": self.rewards.count() - len(rewards),
+            "malformed_shadow_skipped": self.shadow.count() - len(shadows),
         }
 
 

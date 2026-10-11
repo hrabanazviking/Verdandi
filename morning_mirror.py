@@ -97,10 +97,15 @@ def _within_window(entry: dict, now: float) -> bool:
     if not ts:
         return False
     try:
-        moment = datetime.fromisoformat(ts).timestamp()
+        moment = datetime.fromisoformat(ts)
     except (ValueError, TypeError):
         return False
-    return 0 <= (now - moment) <= CITATION_WINDOW_S
+    # Dawn S15: a naive stamp is UTC (same contract as
+    # self_recognition.probe_due) — interpreting it as local time shifted
+    # the 48h citation window by the UTC offset and let stale events cite.
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return 0 <= (now - moment.timestamp()) <= CITATION_WINDOW_S
 
 
 def _summarize_event(ev: dict) -> dict:
@@ -169,8 +174,11 @@ class MorningMirror:
         """Collect the honest evidence of who she has been lately."""
         now = time.time() if now is None else now
         events = [e for e in self._recent_events() if _within_window(e, now)]
-        rewards = [r for r in self.rewards.recent(20) if _within_window(r, now)]
-        shadows = [s for s in self.shadow.recent(20) if _within_window(s, now)]
+        # Dawn S15: filter the FULL log by window first, then cap for
+        # display — recent(20)-then-filter silently dropped real in-window
+        # evidence on busy days, biasing the self-picture.
+        rewards = [r for r in self.rewards.recent(0) if _within_window(r, now)]
+        shadows = [s for s in self.shadow.recent(0) if _within_window(s, now)]
 
         if self.thread_path.exists() and self.thread_path.stat().st_size > 0:
             thread = {"status": "present",
