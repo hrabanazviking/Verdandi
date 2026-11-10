@@ -537,7 +537,7 @@ def get_context_for_cron(max_sessions: int = 5) -> str:
 
     # Include nerve feed — recent events from ALL Runa instances (real-time awareness)
     try:
-        nerve_path = Path.home() / ".hermes" / "state" / "nerve_feed.jsonl"
+        nerve_path = STATE_DIR / "nerve_feed.jsonl"
         if nerve_path.exists():
             nerve_events = []
             with open(nerve_path) as nf:
@@ -566,7 +566,7 @@ def get_context_for_cron(max_sessions: int = 5) -> str:
     # Include reaction directives (import reactor separately to avoid circular imports)
     lines.append("")
     try:
-        sys.path.insert(0, str(Path.home() / ".hermes" / "state"))
+        sys.path.insert(0, str(STATE_DIR))
         from reactor import react
         reactions = react()
         if reactions.get("reactions"):
