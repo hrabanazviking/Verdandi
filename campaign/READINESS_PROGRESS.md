@@ -28,6 +28,15 @@ Method: Mythic Engineering roles run sequentially by keeper (no sub-agents on de
 - Gate: pytest tests/test_reflex_record.py -q -> 4 passed (with VD-T1..T3: 23 passed combined). Fixture run record complete: exactly 5 firing entries, each traceable to its event (digest recomputed) and verdict basis; record survives restart (new FiringRecord reads prior entries, appends continue seq, prefix unchanged).
 - Regression spot-check: tests/test_reactor.py + tests/test_nervous_system.py -> 66 passed.
 
-## VD-T5 - NEXT
+## VD-T5 - Safety rails - BANKED
+- reflex_reactor.py: safety rails checked after judgment, before the action runs. Per-reflex rate limit from decl.rate_limit_per_minute (sliding 60s window, injectable clock); per-reflex owner disable/enable (disable_reflex/enable_reflex); one global kill switch (set_kill_switch, effective on the very next judged firing); declared quiet state (set_quiet, no firing in quiet); erroring action counted per reflex - a success resets the count, two consecutive errors self-disable the reflex and report (safety_reports + logging), the handler is not retried while disabled. Blocked firings are listed in reactor.blocked with their reason and are never executed or recorded as firings.
+- Gate: pytest tests/test_reflex_safety.py -q -> 6 passed (flood: 10 events at limit 6 -> exactly 6 firings, 4 rate_limit blocks, firing resumes after the window; quiet blocks all and resumes; kill switch blocks immediately and resumes; per-reflex disable blocks only that reflex; erroring notify self-disables after 2 consecutive errors with reflex_error x2 + reflex_self_disabled reports, other reflexes still fire; single error then success does not disable). Reflex suite combined (VD-T1..T5 + ready gate): 30 passed.
+- Regression spot-check: tests/test_reactor.py + tests/test_nervous_system.py -> 66 passed (96 passed combined with the reflex/ready suite).
+
+## Ready for Tviheimr gate - PASSED (with one pre-existing env failure noted)
+- Gate test: pytest tests/test_tviheimr_ready_gate.py -q -> 1 passed. A fixture consumer reading a nerve-feed JSONL line by line sees all 3 events in order (awareness feed uninterrupted) while the declared spike-notify reflex fires exactly once - judged (basis contains the trigger match), recorded in the FiringRecord with its latency_ms, inside its recorded latency numbers.
+- Full suite: python3 -m pytest tests/ -q -> 1093 passed, 4 skipped, 1 failed in 159s. The single failure, tests/test_heartbeat_integration.py::TestCLIIntegration::test_pulse_command_exits_zero, is a pre-existing environment failure (heartbeat pulse needs a user systemd bus; auto_restart reports 2 services failed) - verified pre-existing by re-running it with the VD-T5 change stashed: it fails identically on the VD-T4 tree. It does not touch reflex code.
+- OWED (unchanged): live re-proof of the VD-T2 binding against HugrGate HG-T4 once HG-T4 is banked on HugrGate's readiness branch.
+- Roadmap VD-T1..VD-T5 complete. Verdandi is ready for Tviheimr by the roadmap's gate, subject to the owed live HG-T4 re-proof above.
 
 
