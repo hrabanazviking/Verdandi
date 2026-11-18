@@ -35,7 +35,7 @@ class Firing:
         return {"reflex": self.reflex, "action": self.action, "event": self.event, "basis": self.basis, "judge": self.judge, "latency_ms": self.latency_ms, "effect": self.effect}
 
 class ReflexReactor:
-    def __init__(self, binding, handlers=None, starter=None):
+    def __init__(self, binding, handlers=None, starter=None, record=None):
         self.binding = binding
         self.registry = binding.registry
         self.awareness = []
@@ -43,6 +43,7 @@ class ReflexReactor:
         self.shed_sources = {}
         self.started = []
         self.spoken = []
+        self.record = record
         self.firings = []
         self.latencies = {}
         self._starter = starter or (lambda name: self.started.append(name) or {"started": name})
@@ -78,6 +79,8 @@ class ReflexReactor:
         out = []
         for verdict in self.binding.judge_event(event):
             if not verdict.fire:
+                if self.record is not None:
+                    self.record.record_no_fire(verdict, event)
                 continue
             decl = self.registry.require(verdict.reflex)
             t0 = time.perf_counter_ns()
@@ -85,6 +88,8 @@ class ReflexReactor:
             latency_ms = (time.perf_counter_ns() - t0) / 1e6
             f = Firing(reflex=decl.name, action=decl.action, event=dict(event), basis=verdict.basis, judge=verdict.judge, latency_ms=latency_ms, effect=effect if isinstance(effect, dict) else {"result": effect})
             self.firings.append(f); self.latencies.setdefault(decl.name, []).append(latency_ms); out.append(f)
+            if self.record is not None:
+                self.record.record_firing(f)
         return out
     def process_stream(self, events):
         out = []
