@@ -1,0 +1,13 @@
+{"events": [
+ {"feed": "wyrd", "salience": 0.95},
+ {"feed": "wyrd", "salience": 0.3},
+ {"feed": "ops", "threat": 0.9},
+ {"feed": "ops", "threat": 0.2},
+ {"feed": "chatter", "source": "chatter", "noise": 0.97},
+ {"feed": "chatter", "source": "chatter", "noise": 0.4},
+ {"status": "stalled", "process": "heartbeat"},
+ {"status": "running", "process": "heartbeat"},
+ {"kind": "alert", "feed": "ops"},
+ {"kind": "note", "feed": "ops"},
+ {"feed": "quiet", "salience": 0.1}
+]}
