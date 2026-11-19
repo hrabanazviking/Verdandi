@@ -185,3 +185,107 @@ def test_morning_mirror_quiet_without_projection(tmp_path):
     text = mm.render(bundle)
     assert "[heimr-wyrd-unnr · manifest — what is modeled (WYRD)]" in text
     assert "No WYRD projection yet" in text
+
+
+# -- Slice 3: graceful degradation without the wyrdforge backend ----------
+def _wyrdforge_importable():
+    try:
+        import wyrdforge  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def test_inbound_degrades_gracefully_without_backend(tmp_path, capsys,
+                                                     monkeypatch):
+    """Slice 3: with the WYRD repo absent the inbound side degrades —
+    mirror_context() -> None, check_divergence() -> [], main() exits 0
+    with a stderr note. No exception anywhere."""
+    if _wyrdforge_importable():
+        pytest.skip("WYRD repo present")
+    assert wyrd_inbound.wyrdforge_available() is False
+    missing = str(tmp_path / "wyrd_mirror.json")
+    assert mirror_context(missing) is None
+    assert check_divergence(missing, str(tmp_path)) == []
+    monkeypatch.setattr(wyrd_inbound, "load_projection",
+                        lambda path=None: None)
+    assert wyrd_inbound.main(["--divergences-only"]) == 0
+    assert "degrading" in capsys.readouterr().err
+
+
+# -- Slice 18: contradiction-ledger append is idempotent -------------------
+def _ledger_args(tmp_path):
+    import wyrd_ledger_append as wla
+    feed = tmp_path / "feed.jsonl"
+    ledger = tmp_path / "ledger.md"
+    state = tmp_path / "state.json"
+    ledger.write_text("# Contradiction ledger\n\n## Entries\n",
+                      encoding="utf-8")
+    return wla, ["--feed", str(feed), "--ledger", str(ledger),
+                 "--state", str(state)], feed, ledger, state
+
+
+def _divergence_event(seq, subject="wish:w1"):
+    return {"type": "wyrd_divergence", "_seq": seq,
+            "_ts": 1727800000.0 + seq, "_iso": "2026-10-01T12:00:00+00:00",
+            "data": {"kind": "stale_wish", "subject": subject,
+                     "report": "The model still believes I want 'Learn Old "
+                               "Norse'; I have fulfilled it."}}
+
+
+def _entry_count(ledger):
+    import re
+    return len(re.findall(r"^### CONTRADICTION-\d+",
+                          ledger.read_text(encoding="utf-8"), re.M))
+
+
+def test_double_append_is_idempotent(tmp_path):
+    """Slice 18: running wyrd_ledger_append.main twice with the same feed
+    events — and again after a state reset — yields exactly 1 ledger
+    entry. (Repro found no double-append: the ledger-text subject check
+    is the second line of defense behind the state watermark. This test
+    locks the property in.)"""
+    wla, args, feed, ledger, state = _ledger_args(tmp_path)
+    feed.write_text(json.dumps(_divergence_event(1)) + "\n",
+                    encoding="utf-8")
+    assert wla.main(args) == 0          # first run: no backfill by design
+    assert _entry_count(ledger) == 0
+    with open(str(feed), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_divergence_event(2)) + "\n")
+    assert wla.main(args) == 0          # identical-input run: appends once
+    assert _entry_count(ledger) == 1
+    assert wla.main(args) == 0          # re-run: nothing new, still one
+    assert _entry_count(ledger) == 1
+    state.unlink()                      # state reset between runs
+    assert wla.main(args) == 0
+    assert _entry_count(ledger) == 1
+
+
+# -- Slice 19: corrupt feed lines / state file are tolerated ---------------
+def test_ledger_append_tolerates_corrupt_input(tmp_path, capsys):
+    """Slice 19: torn feed lines are skipped loudly, a corrupt state file
+    degrades to fresh — the run exits 0 and valid lines are still
+    processed."""
+    wla, args, feed, ledger, state = _ledger_args(tmp_path)
+    good = _divergence_event(2)
+    feed.write_text("{not valid json\n" + json.dumps(good) + "\n"
+                    + "{also torn\n", encoding="utf-8")
+    state.write_text(json.dumps({"last_seq": 1, "open": {}}),
+                     encoding="utf-8")
+    assert wla.main(args) == 0
+    assert "skipping torn feed line" in capsys.readouterr().err
+    assert _entry_count(ledger) == 1  # the valid line was still processed
+
+    # Corrupt state files (garbage, or valid JSON of the wrong shape)
+    # must not crash: the run degrades to a fresh state and exits 0.
+    state.write_text("{oops", encoding="utf-8")
+    assert wla.main(args) == 0
+    state.write_text("[1, 2, 3]", encoding="utf-8")
+    assert wla.main(args) == 0
+    # The state self-healed: a fresh, valid state file now exists, and
+    # the pipeline still processes new events afterwards.
+    json.loads(state.read_text(encoding="utf-8"))
+    with open(str(feed), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(_divergence_event(3, subject="wish:w2")) + "\n")
+    assert wla.main(args) == 0
+    assert _entry_count(ledger) == 2

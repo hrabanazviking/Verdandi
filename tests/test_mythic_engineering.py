@@ -87,6 +87,11 @@ def test_doctrine_falls_back_when_codex_missing(tmp_path):
 
 
 def test_doctrine_reads_his_real_codex():
+    # Volmarr's personal Codex lives at ~/workspace/user/files/ and is not part
+    # of this repo checkout, so skip rather than fail when it is absent.
+    real_path = me.CODEX_PATH
+    if not (os.path.isfile(real_path) and os.access(real_path, os.R_OK)):
+        pytest.skip("personal codex absent — not part of repo checkout")
     d = doctrine()
     assert "fallback" not in d["source"]
     assert len(d["pillars"]) == 5

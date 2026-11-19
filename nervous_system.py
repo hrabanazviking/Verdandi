@@ -40,6 +40,7 @@ import fcntl
 import json
 import os
 import signal
+import socket
 import sys
 import time
 from collections import deque
@@ -57,11 +58,40 @@ MAX_FEED_BYTES = 10 * 1024 * 1024  # 10 MB rotation threshold
 RING_BUFFER_SIZE = 256              # In-memory recent events
 SUBSCRIBER_TIMEOUT_S = 120          # Seconds before a subscriber is considered stale
 SUBSCRIBER_PROBE_INTERVAL = 30     # How often to check for stale subscribers
+MAX_MESSAGE_BYTES = 1024 * 1024     # 1 MiB — largest single frame the hub accepts
+BROADCAST_DRAIN_TIMEOUT_S = 5.0     # Per-subscriber write timeout during broadcast
+
+# Durability: prefer os.fdatasync (data only, cheaper) with os.fsync fallback,
+# so a crash cannot leave a torn line in the feed.
+_FSYNC = getattr(os, 'fdatasync', os.fsync)
+
+
+def _pid_is_hub(pid: int) -> bool:
+    """True only if pid exists AND is a nerve hub process (guards PID reuse).
+
+    Fail-closed toward restart: a PID we cannot verify is NOT treated as
+    the hub. Blocking a needed restart (2026-09-26: PermissionError on a
+    foreign PID refused the hub's resurrection) is worse than reaping a
+    stale PID file — our hub always runs as our own user, so a PID we
+    cannot signal or inspect cannot be our hub.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # exists but not ours — verify via /proc before trusting
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            cmd = f.read().decode(errors="replace")
+    except OSError:
+        return False  # died between checks, or unreadable — not verifiably the hub
+    return "nervous_system" in cmd and "serve" in cmd
 
 
 def log_msg(msg: str):
     """Append to nerve hub log with file locking for concurrent safety."""
-    ts = datetime.now().isoformat() + 'Z'
+    ts = datetime.now(timezone.utc).isoformat()
     try:
         with open(LOG_PATH, 'a') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
@@ -82,7 +112,7 @@ def _feed_lock_write(event_line: str):
         try:
             f.write(event_line + '\n')
             f.flush()
-            os.fsync(f.fileno())
+            _FSYNC(f.fileno())
         finally:
             fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
@@ -153,11 +183,31 @@ class RingBuffer:
         self._buf.append(event)
 
     def recent(self, count: int = 20) -> list:
+        try:
+            count = int(count)
+        except (TypeError, ValueError):
+            count = 20
+        count = max(0, min(count, 1000))
         items = list(self._buf)
-        return items[-count:]
+        return items[-count:] if count else []
 
     def __len__(self):
         return len(self._buf)
+
+
+# Slice 11: fields a subscribe frame is allowed to carry.
+_SUBSCRIBE_ALLOWED_FIELDS = frozenset({'nerve_type', 'filter'})
+
+
+def _validate_subscribe(event: dict) -> bool:
+    """Validate a subscribe frame.
+
+    Accepts a dict with no extra fields or only known optional fields
+    (currently: 'filter'). Unknown fields or a non-dict frame → False.
+    """
+    if not isinstance(event, dict):
+        return False
+    return set(event.keys()) <= _SUBSCRIBE_ALLOWED_FIELDS
 
 
 class NerveHub:
@@ -183,11 +233,71 @@ class NerveHub:
                 try:
                     data = await asyncio.wait_for(reader.readline(), timeout=SUBSCRIBER_TIMEOUT_S)
                 except asyncio.TimeoutError:
+                    if writer in self.subscribers:
+                        # Dawn S4: a quiet subscriber is the documented use
+                        # case (the `subscribe` CLI only ever listens). Prove
+                        # liveness with a keepalive ping instead of booting
+                        # it; a dead peer fails the write and is dropped.
+                        try:
+                            writer.write(json.dumps({
+                                'nerve_type': 'ping',
+                                'ts': time.time(),
+                            }).encode() + b'\n')
+                            await asyncio.wait_for(writer.drain(), timeout=5)
+                        except (ConnectionError, OSError, asyncio.TimeoutError):
+                            log_msg(f"Subscriber {addr} failed keepalive — disconnecting")
+                            break
+                        self.subscriber_times[writer] = time.time()
+                        continue
                     # Client hasn't sent anything in a while — disconnect
                     log_msg(f"Client {addr} timed out (no data for {SUBSCRIBER_TIMEOUT_S}s)")
                     break
+                except (ValueError, asyncio.LimitOverrunError):
+                    # Dawn S3: a single frame bigger than the reader limit
+                    # (no newline within it) raises here — ValueError on
+                    # 3.12, LimitOverrunError on older Pythons. Route it
+                    # through the structured rejection, never a traceback.
+                    log_msg(f"Oversized frame from {addr} exceeded reader limit — draining and closing")
+                    # Drain the rest of the hostile frame first: as long as
+                    # megabytes sit unread in our receive buffer, close()
+                    # turns into an RST that eats the error frame (and the
+                    # sender's drain can never complete). Stop when the
+                    # sender goes quiet.
+                    try:
+                        while True:
+                            chunk = await asyncio.wait_for(reader.read(65536), timeout=1.0)
+                            if not chunk:
+                                break
+                    except asyncio.TimeoutError:
+                        pass
+                    except (ConnectionError, OSError):
+                        pass
+                    try:
+                        writer.write(json.dumps({
+                            'nerve_type': 'error',
+                            'reason': 'message_too_large'
+                        }).encode() + b'\n')
+                        await writer.drain()
+                    except (ConnectionError, OSError):
+                        pass
+                    break
 
                 if not data:
+                    break
+
+                # --- Slice 7: enforce max message size (1 MiB per frame). ---
+                # An oversized frame gets a structured error and the connection
+                # is closed; the hub keeps serving other clients.
+                if len(data) > MAX_MESSAGE_BYTES:
+                    log_msg(f"Oversized frame from {addr}: {len(data)} bytes — closing connection")
+                    try:
+                        writer.write(json.dumps({
+                            'nerve_type': 'error',
+                            'reason': 'message_too_large'
+                        }).encode() + b'\n')
+                        await writer.drain()
+                    except (ConnectionError, OSError):
+                        pass
                     break
 
                 line = data.decode().strip()
@@ -197,12 +307,50 @@ class NerveHub:
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
+                    # --- Slice 9: structured error, but keep the connection
+                    # loop alive so the client can send a valid frame next. ---
                     log_msg(f"Invalid JSON from {addr}: {line[:100]}")
+                    try:
+                        writer.write(json.dumps({
+                            'nerve_type': 'error',
+                            'reason': 'invalid_json'
+                        }).encode() + b'\n')
+                        await writer.drain()
+                    except (ConnectionError, OSError):
+                        break
+                    continue
+
+                # A decoded frame must be a JSON object: a list/string/number
+                # has no nerve_type and would crash .get() below (Slice 11).
+                if not isinstance(event, dict):
+                    log_msg(f"Non-dict frame from {addr}: {type(event).__name__}")
+                    try:
+                        writer.write(json.dumps({
+                            'nerve_type': 'error',
+                            'reason': 'invalid_json'
+                        }).encode() + b'\n')
+                        await writer.drain()
+                    except (ConnectionError, OSError):
+                        break
                     continue
 
                 msg_type = event.get('nerve_type', 'publish')
 
                 if msg_type == 'subscribe':
+                    # --- Slice 11: validate the subscribe frame. Only known
+                    # optional fields allowed; anything else is rejected with
+                    # a structured error instead of blowing up later. ---
+                    if not _validate_subscribe(event):
+                        log_msg(f"Invalid subscribe frame from {addr}: {line[:100]}")
+                        try:
+                            writer.write(json.dumps({
+                                'nerve_type': 'error',
+                                'reason': 'invalid_subscribe'
+                            }).encode() + b'\n')
+                            await writer.drain()
+                        except (ConnectionError, OSError):
+                            break
+                        continue
                     self.subscribers.add(writer)
                     self.subscriber_times[writer] = time.time()
                     log_msg(f"Subscriber added (total: {len(self.subscribers)})")
@@ -226,8 +374,15 @@ class NerveHub:
                     continue
 
                 if msg_type == 'recent':
-                    # Client wants recent events from ring buffer
+                    # Client wants recent events from ring buffer.
+                    # Sanitize: a malformed count (e.g. a string) must never
+                    # reach the ring buffer — it killed the hub on 2026-09-30.
                     count = event.get('count', 20)
+                    try:
+                        count = int(count)
+                    except (TypeError, ValueError):
+                        count = 20
+                    count = max(0, min(count, 1000))
                     recent_events = self.ring_buffer.recent(count)
                     writer.write(json.dumps({
                         'nerve_type': 'recent_events',
@@ -270,20 +425,48 @@ class NerveHub:
                 # Store in ring buffer
                 self.ring_buffer.append(event)
 
-                # Broadcast to all subscribers
+                # Broadcast to all subscribers.
+                # --- Slice 8: backpressure. A stalled subscriber must not
+                # block the broadcast loop — bound each drain() with
+                # asyncio.wait_for; on timeout the slow subscriber is
+                # dropped and pruned so the rest still receive the event. ---
                 broadcast = (event_line + '\n').encode()
                 dead = set()
+                slow = set()
                 for sub in list(self.subscribers):
                     try:
                         sub.write(broadcast)
-                        await sub.drain()
+                        await asyncio.wait_for(sub.drain(),
+                                              timeout=BROADCAST_DRAIN_TIMEOUT_S)
+                    except asyncio.TimeoutError:
+                        slow.add(sub)
                     except (ConnectionError, OSError, BrokenPipeError):
                         dead.add(sub)
-                self.subscribers -= dead
-                for d in dead:
-                    self.subscriber_times.pop(d, None)
+                for sub in slow | dead:
+                    self.subscribers.discard(sub)
+                    self.subscriber_times.pop(sub, None)
+                    try:
+                        # A slow subscriber has a full write buffer: a plain
+                        # close() would defer teardown until it flushes, which
+                        # never happens for a stalled peer. Shut the socket
+                        # down so the fd is released immediately.
+                        raw_sock = sub.get_extra_info('socket')
+                        if raw_sock is not None:
+                            try:
+                                raw_sock.shutdown(socket.SHUT_RDWR)
+                            except OSError:
+                                pass
+                            raw_sock.close()
+                    except Exception:
+                        pass
+                    try:
+                        sub.close()
+                    except Exception:
+                        pass
                 if dead:
                     log_msg(f"Removed {len(dead)} dead subscriber(s)")
+                if slow:
+                    log_msg(f"Pruned {len(slow)} slow subscriber(s) (drain timed out after {BROADCAST_DRAIN_TIMEOUT_S}s)")
 
                 # Acknowledge to publisher
                 try:
@@ -336,14 +519,12 @@ class NerveHub:
         if PID_PATH.exists():
             try:
                 old_pid = int(PID_PATH.read_text().strip())
-                try:
-                    os.kill(old_pid, 0)  # Check if process alive
+                if _pid_is_hub(old_pid):
                     print(f"❌ Nerve Hub already running (PID {old_pid}). Use 'stop' first.")
                     sys.exit(1)
-                except ProcessLookupError:
-                    # Stale PID file — clean it up
-                    PID_PATH.unlink(missing_ok=True)
-                    log_msg(f"Cleaned stale PID file (old PID {old_pid} not running)")
+                # Stale PID file (dead or recycled PID) — clean it up
+                PID_PATH.unlink(missing_ok=True)
+                log_msg(f"Cleaned stale PID file (old PID {old_pid} not a hub)")
             except (ValueError, OSError):
                 PID_PATH.unlink(missing_ok=True)
 
@@ -380,7 +561,11 @@ class NerveHub:
 
         self._server = await asyncio.start_unix_server(
             self.handle_client,
-            path=str(SOCKET_PATH)
+            path=str(SOCKET_PATH),
+            # Slice 7: the reader limit must cover a full max-size frame so
+            # the size check in handle_client can see (and reject) it instead
+            # of dying with LimitOverrunError first.
+            limit=MAX_MESSAGE_BYTES + 4096,
         )
 
         # --- Socket permission hardening ---
@@ -393,6 +578,16 @@ class NerveHub:
         tmp_pid.rename(PID_PATH)
 
         self._shutdown_event = asyncio.Event()
+
+        # Dawn S5: cmd_stop sends SIGTERM for "graceful shutdown", but the
+        # default SIGTERM action killed the process before the drain path
+        # below could run. Route SIGTERM into the shutdown event so the
+        # documented graceful path (shutdown frame + drain log) executes.
+        try:
+            _loop = asyncio.get_running_loop()
+            _loop.add_signal_handler(signal.SIGTERM, self._shutdown_event.set)
+        except (NotImplementedError, RuntimeError):
+            log_msg("SIGTERM graceful-shutdown handler unavailable on this platform")
 
         log_msg(f"Nerve Hub started (PID {pid})")
         print(f"🧠 Nerve Hub started on {SOCKET_PATH}")
@@ -533,36 +728,67 @@ def get_recent_events(count: int = 20) -> list:
     return events[-count:]
 
 
+def _ping_hub(timeout: float = 2.0):
+    """Send a nerve ping to the hub and return the pong dict, or None.
+
+    Verifies actual socket connectivity plus a ping/pong round-trip.
+    Used by the healthcheck (Slice 16) and get_status (Slice 17).
+    """
+    import socket as sock_mod
+    s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
+    try:
+        s.settimeout(timeout)
+        s.connect(str(SOCKET_PATH))
+        s.sendall(json.dumps({'nerve_type': 'ping'}).encode() + b'\n')
+        data = s.recv(4096)
+        if not data:
+            return None
+        resp = json.loads(data.decode().strip())
+        return resp if resp.get('nerve_type') == 'pong' else None
+    except (OSError, json.JSONDecodeError, TimeoutError):
+        return None
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 def cmd_healthcheck():
-    """Comprehensive health check: verify socket, feed, service are all healthy."""
+    """Comprehensive health check returning a structured dict of results.
+
+    Checks (a) socket connectivity via a real connect + ping/pong and
+    (b) feed-file writability via an append open + zero-byte write,
+    keeping the existing human-readable print behavior.
+    """
     issues = []
     ok_count = 0
+    checks = {
+        'state_dir_ok': False,
+        'socket_ok': False,      # (a) socket exists AND ping/pong succeeds
+        'feed_writable': False,  # (b) feed open-append + zero-byte write works
+        'feed_exists': False,
+        'feed_ok': False,
+        'pid_ok': False,
+        'log_ok': False,
+    }
 
     # 1. Check state directory
     if STATE_DIR.exists():
+        checks['state_dir_ok'] = True
         ok_count += 1
     else:
         issues.append("State directory missing")
 
-    # 2. Check socket file
+    # 2. Check socket: file exists AND a real connect + ping/pong succeeds
     if SOCKET_PATH.exists():
         ok_count += 1
-        # Verify socket is responsive
-        try:
-            import socket as sock_mod
-            s = sock_mod.socket(sock_mod.AF_UNIX, sock_mod.SOCK_STREAM)
-            s.settimeout(2.0)
-            s.connect(str(SOCKET_PATH))
-            s.sendall(json.dumps({'nerve_type': 'ping'}).encode() + b'\n')
-            response = s.recv(4096)
-            s.close()
-            resp = json.loads(response.decode().strip())
-            if resp.get('nerve_type') == 'pong':
-                ok_count += 1
-            else:
-                issues.append(f"Socket responsive but unexpected reply: {resp.get('nerve_type')}")
-        except Exception as e:
-            issues.append(f"Socket exists but not responsive: {e}")
+        pong = _ping_hub(timeout=2.0)
+        if pong is not None:
+            checks['socket_ok'] = True
+            ok_count += 1
+        else:
+            issues.append("Socket exists but not responsive to ping")
     else:
         issues.append("Socket file missing (hub not running)")
 
@@ -572,6 +798,7 @@ def cmd_healthcheck():
             pid = int(PID_PATH.read_text().strip())
             try:
                 os.kill(pid, 0)
+                checks['pid_ok'] = True
                 ok_count += 1
             except ProcessLookupError:
                 issues.append(f"Stale PID file (PID {pid} not running)")
@@ -582,12 +809,14 @@ def cmd_healthcheck():
 
     # 4. Check feed file
     if FEED_PATH.exists():
+        checks['feed_exists'] = True
         ok_count += 1
         try:
             size = FEED_PATH.stat().st_size
             with open(FEED_PATH, 'r') as f:
                 line_count = sum(1 for line in f if line.strip())
             # Check feed is parseable (sample first and last lines)
+            checks['feed_ok'] = True
             ok_count += 1
             # Warn if feed is growing large
             if size > MAX_FEED_BYTES * 0.8:
@@ -600,20 +829,34 @@ def cmd_healthcheck():
         try:
             FEED_PATH.parent.mkdir(parents=True, exist_ok=True)
             FEED_PATH.touch()
+            checks['feed_exists'] = True
+            checks['feed_ok'] = True
             ok_count += 1
             print("   (Created missing feed file)")
         except OSError:
             issues.append("Cannot create feed file")
 
-    # 5. Check log file writable
+    # 5. Check feed writability: open append + zero-byte write
+    try:
+        FEED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(FEED_PATH, 'a') as f:
+            f.write('')  # zero-byte write test
+            f.flush()
+        checks['feed_writable'] = True
+        ok_count += 1
+    except OSError as e:
+        issues.append(f"Feed file not writable: {e}")
+
+    # 6. Check log file writable
     try:
         with open(LOG_PATH, 'a') as f:
             f.write('')  # Test write
+        checks['log_ok'] = True
         ok_count += 1
     except OSError as e:
         issues.append(f"Log file not writable: {e}")
 
-    # Print results
+    # Print results (unchanged human-readable behavior)
     if not issues:
         print("✅ Nerve Hub Health: ALL CHECKS PASSED")
         print(f"   Socket: responsive")
@@ -624,11 +867,23 @@ def cmd_healthcheck():
         for issue in issues:
             print(f"   ❌ {issue}")
 
-    return len(issues) == 0
+    result = dict(checks)
+    result['ok_count'] = ok_count
+    result['issues'] = issues
+    result['healthy'] = len(issues) == 0
+    return result
 
 
 def get_status() -> dict:
-    """Get nerve hub status."""
+    """Get nerve hub status.
+
+    Slice 17 keys:
+      subscriber_count — live subscriber set size (via ping; 0 when hub
+        is not responsive)
+      feed_size_bytes  — feed file size in bytes (kept)
+      uptime_s         — seconds since hub start (via ping; 0.0 when the
+        hub is not responsive)
+    """
     status = {
         'hub_running': False,
         'pid': None,
@@ -636,18 +891,17 @@ def get_status() -> dict:
         'feed_exists': FEED_PATH.exists(),
         'feed_events': 0,
         'feed_size_bytes': 0,
+        'subscriber_count': 0,
+        'uptime_s': 0.0,
+        'hub_responsive': False,
     }
 
-    # Check PID
+    # Check PID (verify it's really a hub — PIDs get recycled)
     if PID_PATH.exists():
         try:
             pid = int(PID_PATH.read_text().strip())
             status['pid'] = pid
-            try:
-                os.kill(pid, 0)
-                status['hub_running'] = True
-            except ProcessLookupError:
-                status['hub_running'] = False
+            status['hub_running'] = _pid_is_hub(pid)
         except (ValueError, OSError):
             pass
 
@@ -659,15 +913,18 @@ def get_status() -> dict:
                 if line.strip():
                     status['feed_events'] += 1
 
-    # Try ping
-    try:
-        result = publish_event_sync('ping', {}, 'status_check')
-        if result.get('nerve_type') == 'ack':
-            status['hub_responsive'] = True
-        elif result.get('nerve_type') == 'pong':
-            status['hub_responsive'] = True
-    except Exception:
-        status['hub_responsive'] = False
+    # Ping the hub for live subscriber count + uptime
+    pong = _ping_hub(timeout=2.0)
+    if pong is not None:
+        status['hub_responsive'] = True
+        try:
+            status['subscriber_count'] = int(pong.get('subscribers', 0))
+        except (TypeError, ValueError):
+            pass
+        try:
+            status['uptime_s'] = float(pong.get('uptime_s', 0.0))
+        except (TypeError, ValueError):
+            pass
 
     return status
 
@@ -707,7 +964,7 @@ async def subscribe():
                 if nerve_type == 'shutdown':
                     print(f"\n🛑 Hub shutting down: {event.get('message', '')}", flush=True)
                     break
-                if nerve_type in ('pong', 'ack', 'recent_events'):
+                if nerve_type in ('pong', 'ping', 'ack', 'recent_events'):
                     continue
                 ts = event.get('_iso', '?')
                 seq = event.get('_seq', '?')
@@ -778,6 +1035,8 @@ def cmd_status():
     print(f"   PID: {status['pid'] or 'N/A'}")
     print(f"   Socket: {'✅' if status['socket_exists'] else '❌'} ({SOCKET_PATH})")
     print(f"   Feed: {'✅' if status['feed_exists'] else '❌'} ({status['feed_events']} events, {status['feed_size_bytes']} bytes)")
+    print(f"   Subscribers: {status['subscriber_count']}")
+    print(f"   Uptime: {status['uptime_s']:.1f}s")
     if status.get('hub_responsive') is not None:
         print(f"   Responsive: {'✅' if status['hub_responsive'] else '❌'}")
 
@@ -846,8 +1105,8 @@ def main():
     elif command == 'status':
         cmd_status()
     elif command == 'healthcheck':
-        healthy = cmd_healthcheck()
-        sys.exit(0 if healthy else 1)
+        result = cmd_healthcheck()
+        sys.exit(0 if result.get('healthy') else 1)
     elif command == 'stop':
         cmd_stop()
     else:

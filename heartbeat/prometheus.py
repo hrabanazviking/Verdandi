@@ -142,6 +142,40 @@ class MetricsRegistry:
         emotion = state_dict.get("emotional_state", "unknown")
         self.metrics["emotional_state"].set(float(emotion_map.get(emotion, 2)))
 
+        # Circuit breaker states (per check)
+        breaker_map = {"closed": 0, "open": 1, "half_open": 0.5}
+        breakers = state_dict.get("circuit_breakers", {})
+        for name, state in breakers.items():
+            if isinstance(state, dict):
+                state = state.get("state", "unknown")
+            state = str(state).lower()
+            self.metrics["circuit_breaker_state"].set(
+                float(breaker_map.get(state, -1)),
+                labels={"check": name},
+            )
+
+        # Skuld prediction: days until resource exhaustion (per resource)
+        # Shape (from Skuld's prediction check details):
+        #   checks["prediction"]["details"]["capacity"] =
+        #     {"disk": {"prediction": "exhaustion_predicted",
+        #               "days_to_threshold": 4.2, ...}, ...}
+        prediction = checks.get("prediction")
+        details = (
+            prediction.get("details") if isinstance(prediction, dict)
+            else getattr(prediction, "details", None)
+        )
+        capacity = details.get("capacity", {}) if isinstance(details, dict) else {}
+        for resource, pred in capacity.items():
+            if not isinstance(pred, dict):
+                continue
+            days = pred.get("days_to_threshold")
+            if isinstance(days, bool) or not isinstance(days, (int, float)):
+                continue
+            self.metrics["prediction_days_to_exhaustion"].set(
+                float(days),
+                labels={"resource": str(resource)},
+            )
+
     def render(self) -> str:
         """Render all metrics in Prometheus exposition format."""
         return "\n\n".join(m.render() for m in self.metrics.values()) + "\n"

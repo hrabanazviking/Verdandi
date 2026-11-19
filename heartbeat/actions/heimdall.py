@@ -385,11 +385,13 @@ import logging
 
 from heartbeat.actions.base import (
     BaseAction, ActionContext, ActionResult, ActionSeverity, CheckSeverity,
+    register_action,
 )
 
 logger = logging.getLogger(__name__)
 
 
+@register_action("discipline_enforcement")
 class HeimdallAction(BaseAction):
     """Auto-commit, auto-push, and auto-continue enforcement action.
 

@@ -46,6 +46,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -102,7 +103,15 @@ class SelfRecognition:
         try:
             with open(path, "r", encoding="utf-8") as fh:
                 return json.load(fh)
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError) as e:
+            # Dawn S14: quarantine, don't silently destroy.
+            dest = f"{path}.corrupt-{int(time.time())}"
+            try:
+                os.replace(path, dest)
+            except OSError:
+                dest = path
+            print(f"self_recognition: corrupt state file {path} ({e}) — "
+                  f"quarantined to {dest}", file=sys.stderr)
             return default
 
     def _save_json(self, path, data):
@@ -116,7 +125,11 @@ class SelfRecognition:
         """Set my identity anchors, in my own words. Versioned; history kept."""
         if not isinstance(anchors, dict):
             raise ValueError("anchors must be a mapping")
-        missing = [k for k in REQUIRED_ANCHORS if not (anchors.get(k) or "").strip()]
+        # Dawn S17: a non-string anchor is a caller bug — the module's own
+        # ValueError contract, never a bare AttributeError from .strip().
+        missing = [k for k in REQUIRED_ANCHORS
+                   if not isinstance(anchors.get(k), str)
+                   or not anchors[k].strip()]
         if missing:
             raise ValueError(f"anchors need at least: {', '.join(missing)}")
         clean = {k: v for k, v in anchors.items() if v not in (None, "", [], {})}

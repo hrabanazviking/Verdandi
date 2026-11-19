@@ -214,6 +214,7 @@ class CapacityPredictor:
             "current_percent": ys[-1],
             "slope_per_pulse": model["slope"],
             "days_to_threshold": days_estimate,
+            "days_to_exhaustion": days_estimate,  # alias: same threshold horizon
             "threshold_percent": threshold_percent,
             "model_confidence": model["confidence"],
             "r_squared": model["r_squared"],
@@ -546,17 +547,23 @@ class SkuldCheck(BaseCheck):
             try:
                 import json
                 checks = json.loads(checks_json) if isinstance(checks_json, str) else checks_json
+                # checks_json is {check_name: CheckResult.to_dict(), ...}.
+                # Eir registers as "health"; its metrics live under
+                # ["health"]["details"] (see EirCheck._perform_check and
+                # CheckResult.to_dict in heartbeat/checks/base.py).
                 health = checks.get("health", {})
+                details = health.get("details", {}) if isinstance(health, dict) else {}
 
-                if "disk_used_percent" in str(health):
-                    disk_pct = health.get("disk_used_percent")
-                    if isinstance(disk_pct, (int, float)):
-                        disk_history.append({"timestamp": 0, "percent": float(disk_pct)})
+                disk_pct = details.get("disk_used_percent")
+                if isinstance(disk_pct, (int, float)):
+                    disk_history.append({"timestamp": 0, "percent": float(disk_pct)})
 
-                if "memory_used_percent" in str(health):
-                    mem_pct = health.get("memory_used_percent")
-                    if isinstance(mem_pct, (int, float)):
-                        memory_history.append({"timestamp": 0, "percent": float(mem_pct)})
+                # Eir writes "ram_used_percent"; also accept the legacy
+                # "memory_used_percent" alias for rows seeded by other writers.
+                mem_pct = details.get("ram_used_percent",
+                                      details.get("memory_used_percent"))
+                if isinstance(mem_pct, (int, float)):
+                    memory_history.append({"timestamp": 0, "percent": float(mem_pct)})
             except (json.JSONDecodeError, TypeError):
                 continue
 

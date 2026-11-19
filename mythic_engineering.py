@@ -113,7 +113,17 @@ def _read_json(path: str):
     try:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError) as e:
+        # Dawn S14: quarantine, don't silently destroy.
+        dest = f"{path}.corrupt-{int(time.time())}"
+        try:
+            os.replace(path, dest)
+        except OSError:
+            dest = path
+        print(f"mythic_engineering: corrupt state file {path} ({e}) — "
+              f"quarantined to {dest}", file=sys.stderr)
         return None
 
 
@@ -283,14 +293,21 @@ def check_flexible_roots(repo: str) -> list[dict]:
 
 def check_unbroken_whole(repo: str) -> list[dict]:
     """Everything under the root is tracked in git — the Unbroken Whole."""
+    # Dawn S19: a directory git cannot inspect is not "unbroken" — a
+    # vacuous pass here once printed "all Sacred Laws hold" for unversioned
+    # code. Report the unverifiable state as a violation instead.
     try:
         proc = subprocess.run(
             ["git", "-C", repo, "status", "--porcelain", "--untracked-files=all"],
             capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return []
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return [{"law": "unbroken_whole", "file": repo,
+                 "detail": f"git unavailable ({e}) — the Unbroken Whole "
+                           f"cannot be verified"}]
     if proc.returncode != 0:
-        return []
+        return [{"law": "unbroken_whole", "file": repo,
+                 "detail": "not a git repo (or git failed) — nothing here "
+                           "is versioned, the Unbroken Whole does not hold"}]
     out = []
     for line in proc.stdout.splitlines():
         if line.startswith("??"):
@@ -430,6 +447,15 @@ def _cmd_status(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Dawn S12: domain errors are usage errors (exit 2), not tracebacks.
+    try:
+        return _main_impl(argv)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
+
+
+def _main_impl(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="mythic_engineering.py")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctrine").set_defaults(fn=_cmd_doctrine)

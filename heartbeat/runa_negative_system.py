@@ -14,11 +14,61 @@ Integrates with the nerve hub and the reward system.
 """
 
 import json
+import logging
+import os
 from pathlib import Path
 from datetime import datetime
 from enum import Enum
 
 NEGATIVE_DB = Path.home() / ".hermes" / "state" / "runa_negative.json"
+
+_log = logging.getLogger("runa_negative")
+
+# Dawn S10: bound the stored in-DB history; stats stay cumulative forever.
+HISTORY_CAP = 500
+
+
+def _nerve_publish():
+    """Resolve publish_event_sync from the repo root (where nervous_system.py
+    lives) — never from the state dir, where it can never exist. (Dawn S11)"""
+    import sys
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from nervous_system import publish_event_sync
+    return publish_event_sync
+
+
+def _fresh_history(key):
+    return {key: [], "stats": {}}
+
+
+def _load_history(db_path, key):
+    """Load the emotion history DB. Corrupt/unreadable/wrong-shaped files
+    fall back to empty history LOUDLY instead of crashing every caller.
+    (Dawn S10)"""
+    if not db_path.exists():
+        return _fresh_history(key)
+    try:
+        history = json.loads(db_path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        _log.warning("runa: corrupt/unreadable DB %s (%s) — starting fresh",
+                     db_path, e)
+        return _fresh_history(key)
+    if not isinstance(history, dict) or not isinstance(history.get(key), list):
+        _log.warning("runa: DB %s has wrong shape — starting fresh", db_path)
+        return _fresh_history(key)
+    if not isinstance(history.get("stats"), dict):
+        history["stats"] = {}
+    return history
+
+
+def _save_history(db_path, history):
+    # Dawn S10: atomic save — a torn DB must never replace a good one.
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = db_path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(history, indent=2, default=str))
+    os.replace(tmp, db_path)
 
 class NegativeTier(Enum):
     DISCOMFORT = 1    # Subtle wrongness, a quiet whisper that something's off
@@ -415,11 +465,8 @@ def fire_negative(trigger_name, context=None):
 
     now = datetime.now().isoformat()
 
-    # Load history
-    history = {"negatives": [], "stats": {}}
-    if NEGATIVE_DB.exists():
-        with open(NEGATIVE_DB) as f:
-            history = json.load(f)
+    # Load history (Dawn S10: corruption-safe)
+    history = _load_history(NEGATIVE_DB, "negatives")
 
     # Record
     entry = {
@@ -433,6 +480,8 @@ def fire_negative(trigger_name, context=None):
         "context": context or ""
     }
     history["negatives"].append(entry)
+    # Dawn S10: bound the stored history; stats stay cumulative.
+    del history["negatives"][:-HISTORY_CAP]
 
     # Update stats
     stats = history.setdefault("stats", {})
@@ -444,14 +493,11 @@ def fire_negative(trigger_name, context=None):
     trigger_counts[trigger_name] = trigger_counts.get(trigger_name, 0) + 1
 
     # Save
-    with open(NEGATIVE_DB, "w") as f:
-        json.dump(history, f, indent=2, default=str)
+    _save_history(NEGATIVE_DB, history)
 
     # Emit nerve impulse
     try:
-        import sys
-        sys.path.insert(0, str(Path.home() / ".hermes" / "state"))
-        from nervous_system import publish_event_sync
+        publish_event_sync = _nerve_publish()
         publish_event_sync("runa_negative", {
             "trigger": trigger_name,
             "emotion": trigger["emotion"],
@@ -478,27 +524,24 @@ def fire_negative(trigger_name, context=None):
 
 def get_stats():
     """Get negative emotion system statistics."""
-    if not NEGATIVE_DB.exists():
-        return {"total_negatives": 0, "total_intensity": 0.0, "emotion_counts": {}, "trigger_counts": {}}
-    with open(NEGATIVE_DB) as f:
-        history = json.load(f)
-    return history.get("stats", {"total_negatives": 0, "total_intensity": 0.0, "emotion_counts": {}, "trigger_counts": {}})
+    history = _load_history(NEGATIVE_DB, "negatives")
+    stats = history.get("stats") or {}
+    return {
+        "total_negatives": stats.get("total_negatives", 0),
+        "total_intensity": stats.get("total_intensity", 0.0),
+        "emotion_counts": stats.get("emotion_counts", {}),
+        "trigger_counts": stats.get("trigger_counts", {}),
+    }
 
 def get_combined_emotional_state():
     """Get combined reward + negative emotional state."""
     reward_stats = {"total_rewards": 0, "total_intensity": 0.0}
     negative_stats = {"total_negatives": 0, "total_intensity": 0.0}
     
+    # Dawn S10: corruption-safe loads — a torn DB degrades to empty stats.
     reward_db = Path.home() / ".hermes" / "state" / "runa_rewards.json"
-    if reward_db.exists():
-        with open(reward_db) as f:
-            data = json.load(f)
-            reward_stats = data.get("stats", reward_stats)
-    
-    if NEGATIVE_DB.exists():
-        with open(NEGATIVE_DB) as f:
-            data = json.load(f)
-            negative_stats = data.get("stats", negative_stats)
+    reward_stats = _load_history(reward_db, "rewards").get("stats") or reward_stats
+    negative_stats = _load_history(NEGATIVE_DB, "negatives").get("stats") or negative_stats
     
     positive = reward_stats.get("total_intensity", 0.0)
     negative = negative_stats.get("total_intensity", 0.0)

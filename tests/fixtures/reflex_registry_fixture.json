@@ -1,0 +1,10 @@
+{
+  "reflexes": [
+    {"name": "feed-spike-notify", "trigger": {"feed": "wyrd", "salience_gte": 0.8},
+     "action": "notify", "params": {"channel": "awareness"},
+     "rate_limit_per_minute": 6, "owner_grant": "volmarr-2026-11-18"},
+    {"name": "noisy-source-shed", "trigger": {"feed": "*", "noise_gte": 0.9},
+     "action": "shed", "params": {"summary_rate_seconds": 60},
+     "rate_limit_per_minute": 2, "owner_grant": "volmarr-2026-11-18", "enabled": false}
+  ]
+}

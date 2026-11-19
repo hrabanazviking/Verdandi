@@ -28,18 +28,34 @@ CURRENT_FILE = STATE_DIR / "current.json"
 
 
 def _read_all_entries() -> list[dict]:
-    """Read all entries from the JSONL log."""
+    """Read all entries from the JSONL log.
+
+    Lines that are valid JSON but not objects (e.g. bare ``42`` or
+    ``"just a string"``) are skipped with a warning on stderr — they
+    would otherwise crash ``react()`` when ``entry.get(...)`` is called
+    on them (S13 fix).
+    """
     if not CONV_LOG.exists():
         return []
     entries = []
+    skipped_non_object = 0
     with open(CONV_LOG) as f:
         for line in f:
             line = line.strip()
             if line:
                 try:
-                    entries.append(json.loads(line))
+                    obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(obj, dict):
+                    skipped_non_object += 1
+                    continue
+                entries.append(obj)
+    if skipped_non_object:
+        print(
+            f"warning: skipped {skipped_non_object} non-object JSON line(s) in {CONV_LOG}",
+            file=sys.stderr,
+        )
     return entries
 
 
@@ -55,20 +71,60 @@ def _get_current_state() -> dict | None:
 
 
 def _parse_timestamp(ts: str) -> datetime | None:
-    """Parse an ISO timestamp string."""
+    """Parse an ISO timestamp string.
+
+    Naive (tz-less) timestamps are assumed to be UTC so that arithmetic
+    against ``datetime.now(timezone.utc)`` never raises ``TypeError``
+    (S12 fix; mirrors conversation_logger.cmd_end's defensive guard).
+    """
     try:
-        return datetime.fromisoformat(ts)
+        dt = datetime.fromisoformat(ts)
     except (ValueError, TypeError):
         return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+# Focus map: focus value -> (kept reaction sections, kept top-level directive actions)
+_FOCUS_MAP = {
+    "all": (None, None),  # everything kept
+    "blockers": (["blockers_needing_reaction"], ["resolve_blockers"]),
+    "learnings": (["recent_learnings_to_store"], ["store_learnings"]),
+    "files": (["files_changed_needing_push"], ["verify_pushed"]),
+    "next": (["next_actions_to_pick_up"], ["continue_work"]),
+}
+
+
+def _apply_focus(reactions: dict, focus: str) -> dict:
+    """Narrow a full reaction report down to a single focus area (S15)."""
+    if focus == "all":
+        return reactions
+    sections, actions = _FOCUS_MAP[focus]
+    for key in list(reactions.keys()):
+        if key == "reactions":
+            continue
+        if key not in sections:
+            reactions[key] = []
+    reactions["reactions"] = [
+        r for r in reactions["reactions"] if r.get("action") in actions
+    ]
+    return reactions
 
 
 def react(focus: str = "all") -> dict:
     """
     Analyze conversation log and produce reaction directives.
-    
+
     This is the CORE intelligence of the system — not just reading
     what happened, but deciding what to DO about it.
+
+    ``focus`` limits the report to one area: "all", "blockers",
+    "learnings", "files" or "next" (S15 fix; mirrors the --focus CLI
+    flag). Non-matching sections come back as empty lists.
     """
+    if focus not in _FOCUS_MAP:
+        raise ValueError(f"unknown focus {focus!r}; valid: {sorted(_FOCUS_MAP)}")
     entries = _read_all_entries()
     current = _get_current_state()
     now = datetime.now(timezone.utc)
@@ -91,9 +147,12 @@ def react(focus: str = "all") -> dict:
     seen_learnings = set()
     seen_files = set()
     
-    # Get active session's blockers (resolved blockers are removed)
+    # Get active session's blockers (resolved blockers are removed;
+    # a blocker logged again AFTER resolution re-activates it as a
+    # regression, with a visible re-occurrence count — S14 fix)
     resolved_blockers = set()
     active_blockers = set()
+    blocker_reoccurrences = {}
     
     # Process entries in order — most recent last
     for entry in entries:
@@ -124,8 +183,13 @@ def react(focus: str = "all") -> dict:
         # Track blockers and resolutions
         if et == "event" and entry.get("event_type") == "blocker":
             content = entry.get("content", "")
-            if content not in resolved_blockers:
-                active_blockers.add(content)
+            if content in resolved_blockers:
+                # Regression: the blocker was resolved, now it's back.
+                # It must become active again — silently dropping it
+                # hides the recurrence (S14 fix).
+                resolved_blockers.discard(content)
+                blocker_reoccurrences[content] = blocker_reoccurrences.get(content, 0) + 1
+            active_blockers.add(content)
         
         if et == "event" and entry.get("event_type") == "blocker_resolved":
             content = entry.get("content", "")
@@ -191,9 +255,17 @@ def react(focus: str = "all") -> dict:
     for blocker in active_blockers:
         if blocker not in seen_blockers:
             seen_blockers.add(blocker)
+            reoccurrences = blocker_reoccurrences.get(blocker, 0)
+            reaction_text = f"UNRESOLVED BLOCKER: {blocker}. Investigate, resolve, or log blocker_resolved."
+            if reoccurrences:
+                reaction_text += (
+                    f" (REGRESSION: re-occurred after resolution "
+                    f"{reoccurrences} time(s))"
+                )
             reactions["blockers_needing_reaction"].append({
                 "content": blocker,
-                "reaction": f"UNRESOLVED BLOCKER: {blocker}. Investigate, resolve, or log blocker_resolved."
+                "reaction": reaction_text,
+                "reoccurrences": reoccurrences,
             })
     
     # Get current session's next actions
@@ -253,7 +325,7 @@ def react(focus: str = "all") -> dict:
             "items": [m["reaction"] for m in reactions["milestones_to_acknowledge"]]
         })
     
-    return reactions
+    return _apply_focus(reactions, focus)
 
 
 def format_reactions(reactions: dict, fmt: str = "text") -> str:

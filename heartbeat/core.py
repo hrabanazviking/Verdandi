@@ -14,6 +14,7 @@ States:
   - DEGRADED: One or more checks in warning state (but not critical)
   - CRITICAL: One or more checks exceeded critical thresholds
   - RECOVERING: Was critical/degraded, now recovering
+  - UNKNOWN: No checks enabled — the daemon cannot honestly claim health
 
 Every pulse fires a nerve impulse to the nerve hub. Every state change
 is logged, stored in Mímir (if available), and triggers appropriate
@@ -46,6 +47,24 @@ from heartbeat.checks.base import BaseCheck, CheckResult, CheckSeverity
 from heartbeat.reactor import Reactor
 
 logger = logging.getLogger("verdandi.heartbeat")
+
+
+# ─────────────────────────────────────────────────────
+# Time-in-window helper — shared by maintenance windows
+# ─────────────────────────────────────────────────────
+
+def _time_in_window(start: str, end: str, current: str) -> bool:
+    """Whether an "HH:MM" time falls inside a [start, end] window.
+
+    Handles overnight windows that wrap past midnight: when start > end
+    (e.g. "22:00"–"02:00"), the window is satisfied if current >= start
+    OR current <= end. Plain lexicographic comparison works because
+    "HH:MM" zero-padded strings sort chronologically.
+    """
+    if start <= end:
+        return start <= current <= end
+    # Overnight window — wraps past midnight
+    return current >= start or current <= end
 
 
 # ─────────────────────────────────────────────────────
@@ -150,8 +169,15 @@ class HealthScore:
         self._ema: float = 100.0  # Start assuming healthy
         self._ema_alpha: float = 2.0 / (window_size + 1)
     
-    def record_pulse(self, checks: dict[str, "CheckResult"]) -> float:
-        """Record a pulse and return the current health score (0-100)."""
+    def record_pulse(self, checks: dict[str, "CheckResult"]) -> Optional[float]:
+        """Record a pulse and return the current health score (0-100).
+
+        Returns None when no checks are enabled: with nothing under watch,
+        claiming a score (100 or otherwise) would be a lie. The sample is
+        not recorded and the EMA is left untouched.
+        """
+        if not checks:
+            return None
         score = self._compute_score(checks)
         self._scores.append(score)
         if len(self._scores) > self.window_size:
@@ -168,8 +194,11 @@ class HealthScore:
         return total / len(checks)
     
     @property
-    def current(self) -> float:
-        """Current exponentially-weighted health score."""
+    def current(self) -> Optional[float]:
+        """Current exponentially-weighted health score, or None if no
+        checks have ever been recorded (no honest score exists)."""
+        if not self._scores:
+            return None
         return round(self._ema, 1)
     
     @property
@@ -199,9 +228,11 @@ class HealthScore:
     
     @property
     def summary(self) -> dict:
-        """Full health score summary."""
+        """Full health score summary. 'no_checks' is True when no check
+        data exists — the honest marker for 'we know nothing'. """
         return {
             "current_score": self.current,
+            "no_checks": not self._scores,
             "trend": self.trend,
             "stability_std": self.stability,
             "sample_count": len(self._scores),
@@ -220,6 +251,7 @@ class DaemonState(Enum):
     CRITICAL = "critical"
     RECOVERING = "recovering"
     SHUTTING_DOWN = "shutting_down"
+    UNKNOWN = "unknown"
 
 
 @dataclass
@@ -363,8 +395,9 @@ class HeartbeatDaemon:
             if day != "daily" and day != current_day:
                 continue
 
-            # Check time range
-            if start <= current_time <= end:
+            # Check time range (UTC, per dawn-run convention:
+            # window "HH:MM" values are matched against datetime.now(timezone.utc))
+            if _time_in_window(start, end, current_time):
                 logger.info(f"In maintenance window: {window}")
                 return True
 
@@ -499,9 +532,12 @@ class HeartbeatDaemon:
                 if breaker:
                     breaker.record_failure()
 
-        # Update health score
+        # Update health score (None when no checks are enabled)
         health = self._health_score.record_pulse(self.state.checks)
-        logger.debug(f"Health score: {health:.1f} (trend: {self._health_score.trend})")
+        if health is None:
+            logger.debug("Health score: n/a (no checks enabled)")
+        else:
+            logger.debug(f"Health score: {health:.1f} (trend: {self._health_score.trend})")
 
         # v0.3.0: Determine emotional state from health trends
         try:
@@ -541,7 +577,9 @@ class HeartbeatDaemon:
         # Persist state
         self.state.last_pulse = now
         if self.state.state in (DaemonState.RUNNING, DaemonState.RECOVERING):
-            if all(
+            # A healthy pulse requires actual checks to have passed —
+            # all([]) is vacuously True, so no checks must never stamp it.
+            if self.state.checks and all(
                 r.severity in (CheckSeverity.OK, CheckSeverity.WARNING)
                 for r in self.state.checks.values()
             ):
@@ -549,7 +587,12 @@ class HeartbeatDaemon:
 
         # v0.3.0: Update Prometheus metrics
         if self._prometheus:
-            self._prometheus.update(self.state.to_dict())
+            state_dict = self.state.to_dict()
+            # Circuit breaker states for the verdandi_circuit_breaker_state gauge
+            state_dict["circuit_breakers"] = {
+                name: breaker.state for name, breaker in self._circuit_breakers.items()
+            }
+            self._prometheus.update(state_dict)
 
         self.state.uptime_seconds = time.monotonic() - start_time + (
             self.state.uptime_seconds if self.state.pulse_count > 1 else 0
@@ -572,7 +615,11 @@ class HeartbeatDaemon:
         # Determine worst severity
         severities = [r.severity for r in self.state.checks.values()]
 
-        if any(s == CheckSeverity.CRITICAL for s in severities):
+        if not severities:
+            # No checks enabled — nothing is being watched. Reporting
+            # RUNNING here would be a false "all clear", so stay honest.
+            new_state = DaemonState.UNKNOWN
+        elif any(s == CheckSeverity.CRITICAL for s in severities):
             new_state = DaemonState.CRITICAL
         elif any(s == CheckSeverity.WARNING for s in severities):
             new_state = DaemonState.DEGRADED

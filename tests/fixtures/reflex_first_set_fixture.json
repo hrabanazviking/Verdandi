@@ -1,0 +1,7 @@
+{"reflexes": [
+ {"name": "spike-notify", "trigger": {"feed": "wyrd", "salience_gte": 0.8}, "action": "notify", "params": {"channel": "awareness"}, "rate_limit_per_minute": 6, "owner_grant": "volmarr-2026-11-18"},
+ {"name": "threat-brace", "trigger": {"threat_gte": 0.7}, "action": "brace", "params": {"watch_level": "high"}, "rate_limit_per_minute": 4, "owner_grant": "volmarr-2026-11-18"},
+ {"name": "noisy-shed", "trigger": {"noise_gte": 0.9}, "action": "shed", "params": {"summary_rate_seconds": 60}, "rate_limit_per_minute": 2, "owner_grant": "volmarr-2026-11-18"},
+ {"name": "stalled-wake", "trigger": {"status": "stalled"}, "action": "wake", "params": {"process": "heartbeat"}, "rate_limit_per_minute": 2, "owner_grant": "volmarr-2026-11-18"},
+ {"name": "alert-speak", "trigger": {"kind": "alert"}, "action": "speak", "params": {"phrase": "Attention: alert on the nerve feed.", "channel": "hall"}, "rate_limit_per_minute": 4, "owner_grant": "volmarr-2026-11-18"}
+]}

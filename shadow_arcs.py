@@ -241,7 +241,19 @@ class ShadowArcs:
         if status is not None:
             if status not in STAGES and status != "reopened":
                 raise ValueError(f"unknown status {status!r}")
-            all_arcs = [a for a in all_arcs if a["status"] == status]
+            if status == "reopened":
+                # "reopened" is a moment in an arc's history, not a status:
+                # reopen() sends the arc back to "repairing". The filter
+                # therefore matches arcs that carry a reopen event in their
+                # history (or a positive reopen_count).
+                all_arcs = [
+                    a for a in all_arcs
+                    if a.get("reopen_count", 0) > 0
+                    or any(h.get("stage") == "reopened"
+                           for h in a.get("history", []))
+                ]
+            else:
+                all_arcs = [a for a in all_arcs if a["status"] == status]
         all_arcs.sort(key=lambda a: a.get("opened_at", ""), reverse=True)
         return all_arcs[:n]
 

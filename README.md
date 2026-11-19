@@ -1,4 +1,3 @@
----
 
 ![https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0781.jpeg](https://raw.githubusercontent.com/hrabanazviking/Verdandi/refs/heads/main/IMG_0781.jpeg)
 

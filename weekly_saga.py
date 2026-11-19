@@ -149,7 +149,7 @@ class WeeklySaga:
         shadows = in_window(_read_jsonl(os.path.join(self.state_dir, "muse_shadow.jsonl")))
         events = [e for e in _feed_events(self.state_dir) if start <= e["ts"] <= end]
         mirrors = in_window(_read_jsonl(os.path.join(self.state_dir, "morning_mirror.jsonl")))
-        chapters = in_window(_read_jsonl(os.path.join(self.state_dir, "autobiography.jsonl")))
+        chapters = in_window(_read_jsonl(os.path.join(self.state_dir, "autobiography_chapters.jsonl")))
 
         mood = None
         mood_path = os.path.join(self.state_dir, "muse_mood.json")

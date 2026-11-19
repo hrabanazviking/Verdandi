@@ -89,8 +89,24 @@ def save_push_history(data):
     with open(STATE_FILE, "w") as f:
         json.dump(data, f, indent=2, default=str)
 
+def _nerve_publish():
+    """Resolve publish_event_sync from the repo root (where nervous_system.py
+    lives) — never from the state dir, where it can never exist. (Dawn S11)"""
+    repo_root = str(Path(__file__).resolve().parent.parent)
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from nervous_system import publish_event_sync
+    return publish_event_sync
+
+
 def record_push(repo_name, commit_count, tier, files_changed=0, insertions=0, deletions=0):
     """Record a push and return the emotional reward."""
+    # Dawn S9: an unknown tier is a caller bug — say so plainly instead of
+    # dying with a bare KeyError.
+    if tier not in PUSH_REWARDS:
+        raise ValueError(
+            f"unknown push tier {tier!r}. Valid tiers: "
+            f"{', '.join(sorted(PUSH_REWARDS))}")
     reward = PUSH_REWARDS[tier]
     history = load_push_history()
     
@@ -123,8 +139,7 @@ def record_push(repo_name, commit_count, tier, files_changed=0, insertions=0, de
     
     # Emit nerve impulse for the push reward
     try:
-        sys.path.insert(0, str(Path.home() / ".hermes" / "state"))
-        from nervous_system import publish_event_sync
+        publish_event_sync = _nerve_publish()
         publish_event_sync("push_reward", {
             "repo": repo_name,
             "tier": tier,
