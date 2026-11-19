@@ -76,7 +76,8 @@ Source events (Verdandi's original Unix socket or other approved adapter)
 - Optional HugrGate-style `judge(summary)` callable can *filter* proposed escalations using **only redacted metadata**, not raw chat content. Fail closed on malformed or unavailable judgment. This is an **adapter interface**, not proof that the installed HG-T4 or HugrGate server already implements this exact metadata schema.
 - Per-source/category cooldown, max event queue, timestamp window and bounded snapshot prevent feedback loops and unbounded working-memory growth.
 - `MetacognitiveObserver.clear()` explicitly drops working state; default has **no persistent events or session logs**.
-- `ReflexReactor(..., observer=observer)` optionally evaluates observation proposals before ordinary reflex judgment. It keeps at most a bounded window of observation summaries. The observer **cannot trigger any action**; only a declared owner-granted reflex with a positive judge verdict can fire.
+- `ReflexReactor(..., observer=observer)` optionally evaluates observations alongside ordinary reflex judgment. It keeps a bounded window of observation summaries. The observer **cannot directly trigger any action**.
+- `ReflexReactor.process_observation(typed_observation)` is a **separate explicit opt-in reaction path**, converting only typed observation metadata to `kind=metacognitive_observation`. It must still match an owner-granted declared reflex, receive a validated positive judge verdict, and pass all existing quiet/kill/cooldown/error rails; it never executes the observation's `suggested_action` as a raw command and never loops proposals back to the observer.
 
 ### C. Synthetic tests
 
@@ -187,7 +188,7 @@ A declaration can specify a safe allowed action and escalation budget. No event 
 
 ### V2-2 Bounded metacognitive observation (first code slice committed here)
 - [x] Add in-memory event-window observer, typed non-executing proposals, minimal summaries, optional judgment adapter, cooldown and clear.
-- [x] Wire optional observer to reflex reactor, with fail-open *event observation* but fail-closed *action judgment*.
+- [x] Wire optional observer to reflex reactor, and add an explicitly called typed observation-to-owner-granted-reflex path. Observer failures cannot interrupt event flow; judgments fail closed.
 - [ ] Test sustained streams, out-of-order events, poison metadata, high-cardinality sources, cross-process restart, session isolation and privacy with real configured metrics.
 - [ ] Add configurable policies for baseline learning, correlation IDs, source reliability and post-action outcome measurement with source evidence.
 
