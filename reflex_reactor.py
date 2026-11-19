@@ -51,9 +51,13 @@ class Firing:
         return {"reflex": self.reflex, "action": self.action, "event": self.event, "basis": self.basis, "judge": self.judge, "latency_ms": self.latency_ms, "effect": self.effect}
 
 class ReflexReactor:
-    def __init__(self, binding, handlers=None, starter=None, record=None, clock=None):
+    def __init__(self, binding, handlers=None, starter=None, record=None, clock=None, observer=None):
         self.binding = binding
         self.registry = binding.registry
+        # Optional metacognitive observation. No action originates from this
+        # observer: owner-granted reflexes still execute only after judgment.
+        self.observer = observer
+        self.observations = []
         self.awareness = []
         self.watch_levels = {}
         self.shed_sources = {}
@@ -132,6 +136,15 @@ class ReflexReactor:
         self.spoken.append(e); return e
     def process_event(self, event):
         out = []
+        if self.observer is not None:
+            try:
+                proposals = self.observer.observe(event)
+                # Bounded operational view, never a durable event payload log.
+                self.observations.extend(proposals)
+                del self.observations[:-256]
+            except Exception as exc:
+                log.warning("Verdandi optional observation failed: %s", type(exc).__name__)
+                # Observation cannot bypass reflex judgment or interrupt nerve flow.
         for verdict in self.binding.judge_event(event):
             if not verdict.fire:
                 if self.record is not None:
