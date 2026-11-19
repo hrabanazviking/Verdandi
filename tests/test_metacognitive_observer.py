@@ -204,3 +204,41 @@ def test_disabled_observer_and_prefilter_leave_old_behavior_available():
     # the new deterministic prefilter is explicitly opt-in.
     assert len(result) == 2
     assert reactor.observations == []
+
+
+def test_explicit_observation_reaction_uses_only_declared_granted_reflex():
+    from metacognitive_observer import Observation
+    reg = ReflexRegistry.from_dict([
+        {"name": "observe-conflict",
+         "trigger": {"kind": "metacognitive_observation",
+                     "category": "evidence_conflict"},
+         "action": "notify", "params": {"channel": "review"},
+         "rate_limit_per_minute": 1, "owner_grant": "approved-fixture"},
+    ])
+    reactor = ReflexReactor(
+        JudgmentBinding(reg, CountingJudge(), prefilter_unmatched=True),
+        observer=MetacognitiveObserver(),
+    )
+    proposal = Observation(
+        category="evidence_conflict", severity="warning",
+        source="skry", count=1, reason="reported conflict",
+        suggested_action="request_evidence", digest="abc123",
+    )
+    firings = reactor.process_observation(proposal)
+    assert len(firings) == 1
+    assert firings[0].action == "notify"
+    assert reactor.awareness[0]["channel"] == "review"
+    assert firings[0].event["kind"] == "metacognitive_observation"
+    assert len(reactor.observations) == 0  # no feedback recursion
+    assert reactor.process_observation(proposal) == []  # rate limited
+    reactor.set_kill_switch(True)
+    assert reactor.process_observation(proposal) == []
+    assert all(f.action == "notify" for f in reactor.firings)
+
+
+def test_untyped_data_cannot_fake_observation_reaction():
+    reactor = ReflexReactor(JudgmentBinding(registry(), CountingJudge()))
+    import pytest
+    with pytest.raises(TypeError):
+        reactor.process_observation({"action": "wake", "command": "rm -rf /"})
+    assert reactor.firings == []
