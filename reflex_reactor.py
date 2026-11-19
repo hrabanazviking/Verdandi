@@ -134,9 +134,30 @@ class ReflexReactor:
     def _do_speak(self, decl, event):
         e = {"channel": decl.params.get("channel", "default"), "phrase": decl.params.get("phrase", ""), "reflex": decl.name}
         self.spoken.append(e); return e
+    def process_observation(self, observation):
+        """Optional, explicit route for a reviewed metacognitive proposal.
+
+        Converts typed observation metadata to a normal declared-reflex
+        candidate event. The existing grant, judge, quiet/kill, cooldown and
+        error rails still govern every action. This method never interprets
+        a suggested_action field as an executable command.
+        """
+        from metacognitive_observer import Observation
+        if not isinstance(observation, Observation):
+            raise TypeError("requires an Observation from the observer")
+        event = {
+            "kind": "metacognitive_observation",
+            "category": observation.category,
+            "severity": observation.severity,
+            "source": observation.source,
+            "digest": observation.digest,
+            "suggested_action": observation.suggested_action,
+        }
+        return self.process_event(event)
+
     def process_event(self, event):
         out = []
-        if self.observer is not None:
+        if self.observer is not None and event.get("kind") != "metacognitive_observation":
             try:
                 proposals = self.observer.observe(event)
                 # Bounded operational view, never a durable event payload log.
