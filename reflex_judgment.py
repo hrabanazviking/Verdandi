@@ -143,14 +143,26 @@ class HugrGateJudge:
 
 
 class JudgmentBinding:
-    """Binds a ReflexRegistry to a judge; owns the degradation rule."""
+    """Binds a ReflexRegistry to a judge; owns the degradation rule.
 
-    def __init__(self, registry, judge, logger=None):
+    `prefilter_unmatched=True` skips remote HugrGate judgment when an
+    explicitly declared trigger is deterministically false. Matching events
+    always require a valid judgment; any failed judge remains no-fire.
+    """
+
+    def __init__(self, registry, judge, logger=None, prefilter_unmatched=False):
         self.registry = registry
         self.judge = judge
         self.log = logger or log
         self.degraded = False
         self.degradation_log = []
+        # Opt-in deterministic fast path. An event cannot fire a reflex
+        # whose explicit declared trigger is false. Skip expensive HG-T4
+        # calls for such cases; keep legacy judgment for matches and keep
+        # the same one-verdict-per-reflex public API.
+        self.prefilter_unmatched = bool(prefilter_unmatched)
+        self.prefilter_count = 0
+        self.judge_call_count = 0
 
     def _degrade(self, reflex_name, reason):
         self.degraded = True
@@ -169,9 +181,24 @@ class JudgmentBinding:
             return Verdict(reflex=reflex_name, fire=False,
                            basis="no-fire: reflex declared disabled",
                            judge=getattr(self.judge, "judge_id", "unknown"))
+        if self.prefilter_unmatched:
+            matched, parts = _trigger_basis(decl.trigger, event)
+            if not matched:
+                self.prefilter_count += 1
+                return Verdict(
+                    reflex=reflex_name, fire=False,
+                    basis="no-fire: declared trigger not matched: " + "; ".join(parts),
+                    judge="deterministic-trigger-prefilter",
+                )
         try:
+            self.judge_call_count += 1
             raw = self.judge.judge(decl, event)
-            return _validate_verdict(raw, reflex_name)
+            verdict = _validate_verdict(raw, reflex_name)
+            # An external judge must never substitute another reflex name:
+            # only the exact declared candidate is permitted to fire.
+            if verdict.reflex != reflex_name:
+                raise MalformedVerdictError("judge returned a different reflex")
+            return verdict
         except Exception as e:
             return self._degrade(reflex_name, f"{type(e).__name__}: {e}")
 

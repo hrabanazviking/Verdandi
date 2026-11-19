@@ -51,9 +51,13 @@ class Firing:
         return {"reflex": self.reflex, "action": self.action, "event": self.event, "basis": self.basis, "judge": self.judge, "latency_ms": self.latency_ms, "effect": self.effect}
 
 class ReflexReactor:
-    def __init__(self, binding, handlers=None, starter=None, record=None, clock=None):
+    def __init__(self, binding, handlers=None, starter=None, record=None, clock=None, observer=None):
         self.binding = binding
         self.registry = binding.registry
+        # Optional metacognitive observation. No action originates from this
+        # observer: owner-granted reflexes still execute only after judgment.
+        self.observer = observer
+        self.observations = []
         self.awareness = []
         self.watch_levels = {}
         self.shed_sources = {}
@@ -130,8 +134,38 @@ class ReflexReactor:
     def _do_speak(self, decl, event):
         e = {"channel": decl.params.get("channel", "default"), "phrase": decl.params.get("phrase", ""), "reflex": decl.name}
         self.spoken.append(e); return e
+    def process_observation(self, observation):
+        """Optional, explicit route for a reviewed metacognitive proposal.
+
+        Converts typed observation metadata to a normal declared-reflex
+        candidate event. The existing grant, judge, quiet/kill, cooldown and
+        error rails still govern every action. This method never interprets
+        a suggested_action field as an executable command.
+        """
+        from metacognitive_observer import Observation
+        if not isinstance(observation, Observation):
+            raise TypeError("requires an Observation from the observer")
+        event = {
+            "kind": "metacognitive_observation",
+            "category": observation.category,
+            "severity": observation.severity,
+            "source": observation.source,
+            "digest": observation.digest,
+            "suggested_action": observation.suggested_action,
+        }
+        return self.process_event(event)
+
     def process_event(self, event):
         out = []
+        if self.observer is not None and event.get("kind") != "metacognitive_observation":
+            try:
+                proposals = self.observer.observe(event)
+                # Bounded operational view, never a durable event payload log.
+                self.observations.extend(proposals)
+                del self.observations[:-256]
+            except Exception as exc:
+                log.warning("Verdandi optional observation failed: %s", type(exc).__name__)
+                # Observation cannot bypass reflex judgment or interrupt nerve flow.
         for verdict in self.binding.judge_event(event):
             if not verdict.fire:
                 if self.record is not None:

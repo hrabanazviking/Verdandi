@@ -41,4 +41,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["verdandi", "verdandi.eir"]
-py-modules = ["nervous_system", "conversation_logger", "context_injector", "reactor"]
+py-modules = ["nervous_system", "conversation_logger", "context_injector", "reactor", "reflexes", "reflex_judgment", "reflex_reactor", "reflex_record", "metacognitive_observer"]
